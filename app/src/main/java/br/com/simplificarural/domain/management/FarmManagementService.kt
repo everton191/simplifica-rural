@@ -5,6 +5,7 @@ import br.com.simplificarural.domain.financial.CashEntry
 import br.com.simplificarural.domain.financial.CashEntryKind
 import br.com.simplificarural.domain.financial.CashViewScope
 import br.com.simplificarural.domain.property.FarmScope
+import br.com.simplificarural.domain.inventory.PackagingConversionService
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -14,17 +15,19 @@ import java.util.UUID
 
 /** Local, validated registration gateway. UI and AI must call this instead of writing data directly. */
 class FarmManagementService(context: Context) {
+    private val appContext = context.applicationContext
     private val store = ManagementRecordStore(context)
+    private val audit = context.getSharedPreferences("rural_management_audit", Context.MODE_PRIVATE)
 
     fun registerPurchase(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, unitPrice: BigDecimal, category: FinancialCategory, date: LocalDate = LocalDate.now(), description: String = "", inventoryCategory: String = "Outros"): ManagementRecord {
         requirePositive(quantity, "quantidade"); requirePositive(unitPrice, "preço de compra")
         return save(scope, ManagementRecordType.COMPRA, date, description.ifBlank { "Compra de $product" }, category, product, StockDirection.ENTRADA, quantity, unit, unitPrice, metadata = mapOf("inventoryCategory" to inventoryCategory))
     }
 
-    fun registerSale(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, unitPrice: BigDecimal, date: LocalDate = LocalDate.now(), description: String = "", lotId: String? = null, receivedAmount: BigDecimal = quantity * unitPrice): ManagementRecord {
+    fun registerSale(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, unitPrice: BigDecimal, date: LocalDate = LocalDate.now(), description: String = "", lotId: String? = null, receivedAmount: BigDecimal = quantity * unitPrice, decreaseStock: Boolean = true): ManagementRecord {
         requirePositive(quantity, "quantidade"); requirePositive(unitPrice, "preço de venda")
         require(receivedAmount >= BigDecimal.ZERO && receivedAmount <= quantity * unitPrice) { "valor recebido inválido" }
-        return save(scope, ManagementRecordType.VENDA, date, description.ifBlank { "Venda de $product" }, FinancialCategory.VENDA_PRODUCAO, product, StockDirection.SAIDA, quantity, unit, unitPrice, lotId, totalAmount = receivedAmount)
+        return save(scope, ManagementRecordType.VENDA, date, description.ifBlank { "Venda de $product" }, FinancialCategory.VENDA_PRODUCAO, product, if (decreaseStock) StockDirection.SAIDA else null, quantity, unit, unitPrice, lotId, totalAmount = receivedAmount)
     }
 
     fun registerExpense(scope: FarmScope, category: FinancialCategory, amount: BigDecimal, date: LocalDate = LocalDate.now(), description: String): ManagementRecord {
@@ -36,6 +39,24 @@ class FarmManagementService(context: Context) {
     fun registerOtherIncome(scope: FarmScope, amount: BigDecimal, date: LocalDate = LocalDate.now(), description: String): ManagementRecord {
         requirePositive(amount, "valor da receita")
         return save(scope, ManagementRecordType.VENDA, date, description, FinancialCategory.OUTRA_RECEITA, totalAmount = amount)
+    }
+
+    /** Venda de ovos embalados é uma operação composta: consome ovos e embalagem, mas entra no caixa uma única vez. */
+    fun registerEggTraySale(scope: FarmScope, product: String, trays: BigDecimal, unit: String, unitPrice: BigDecimal, date: LocalDate = LocalDate.now(), description: String = "", receivedAmount: BigDecimal = trays * unitPrice): ManagementRecord {
+        requirePositive(trays, "quantidade de bandejas"); requirePositive(unitPrice, "preço de venda")
+        val balances = stock(CashViewScope.SelectedUnit(scope))
+        val eggs = balances.firstOrNull { it.productName.equals("ovos", true) && it.unit.contains("unidade", true) }
+        val packaging = balances.filter { it.productName.contains("bandeja", true) || it.productName.contains("cartela", true) }.maxByOrNull { it.quantity }
+        val eggsPerPackage = PackagingConversionService(appContext).eggsPerPackage(scope, product)
+        val requiredEggs = trays * BigDecimal(eggsPerPackage)
+        val missing = buildList {
+            if (eggs == null || eggs.quantity < requiredEggs) add("ovos: disponíveis ${eggs?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"}, necessários ${requiredEggs.stripTrailingZeros().toPlainString()}")
+            if (packaging == null || packaging.quantity < trays) add("bandejas: disponíveis ${packaging?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"}, necessárias ${trays.stripTrailingZeros().toPlainString()}")
+        }
+        require(missing.isEmpty()) { "Estoque insuficiente para fechar a venda (${missing.joinToString("; ")})." }
+        registerStockConsumption(scope, eggs!!.productName, requiredEggs, eggs.unit, date)
+        registerStockConsumption(scope, packaging!!.productName, trays, packaging.unit, date)
+        return registerSale(scope, product, trays, unit, unitPrice, date, description, receivedAmount = receivedAmount, decreaseStock = false)
     }
 
     fun registerStockConsumption(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, date: LocalDate = LocalDate.now(), lotId: String? = null): ManagementRecord {
@@ -66,10 +87,10 @@ class FarmManagementService(context: Context) {
             metadata = buildMap { put("bornDead", bornDead.toString()); weaned?.let { put("weaned", it.toString()) } })
     }
 
-    fun financialResult(scope: CashViewScope): FinancialResult = FinancialCalculator.result(store.all().filter { matches(it, scope) })
-    fun stock(scope: CashViewScope): List<StockBalance> = StockCalculator.balance(store.all().filter { matches(it, scope) })
-    fun swinePerformance(scope: CashViewScope): SwinePerformance = SwineCalculator.performance(store.all().filter { matches(it, scope) })
-    fun cashEntries(scope: CashViewScope): List<CashEntry> = store.all().filter { matches(it, scope) }.mapNotNull { record ->
+    fun financialResult(scope: CashViewScope): FinancialResult = FinancialCalculator.result(activeRecords().filter { matches(it, scope) })
+    fun stock(scope: CashViewScope): List<StockBalance> = StockCalculator.balance(activeRecords().filter { matches(it, scope) })
+    fun swinePerformance(scope: CashViewScope): SwinePerformance = SwineCalculator.performance(activeRecords().filter { matches(it, scope) })
+    fun cashEntries(scope: CashViewScope): List<CashEntry> = activeRecords().filter { matches(it, scope) }.mapNotNull { record ->
         val amount = record.totalAmount ?: return@mapNotNull null
         val kind = if (record.type == ManagementRecordType.VENDA) CashEntryKind.ENTRADA else CashEntryKind.SAIDA
         CashEntry(record.id, record.scope.organizationId, record.scope.farmId, record.scope.unitId, kind, amount, record.date, record.description)
@@ -77,6 +98,16 @@ class FarmManagementService(context: Context) {
 
     /** Registros brutos para telas de histórico e gráficos, já isolados pela unidade selecionada. */
     fun records(scope: CashViewScope): List<ManagementRecord> = store.all().filter { matches(it, scope) }.sortedByDescending { it.createdAt }
+    fun isCancelled(record: ManagementRecord): Boolean = audit.getStringSet("cancelled", emptySet()).orEmpty().contains(record.id)
+    fun cancel(scope: FarmScope, recordId: String, reason: String): ManagementRecord {
+        require(reason.isNotBlank()) { "Informe o motivo do cancelamento." }
+        val original = store.all().firstOrNull { it.id == recordId && it.scope == scope } ?: error("Lançamento não encontrado.")
+        require(!isCancelled(original)) { "Este lançamento já foi cancelado." }
+        audit.edit().putStringSet("cancelled", audit.getStringSet("cancelled", emptySet()).orEmpty() + original.id).apply()
+        return save(scope, ManagementRecordType.ESTORNO, LocalDate.now(), "Cancelamento de: ${original.description}", metadata = mapOf("cancelledRecordId" to original.id, "reason" to reason.trim()))
+    }
+
+    private fun activeRecords(): List<ManagementRecord> = store.all().filterNot(::isCancelled).filter { it.type != ManagementRecordType.ESTORNO }
 
     private fun production(scope: FarmScope, type: ManagementRecordType, amount: Number, unit: String, date: LocalDate, lotId: String?) =
         save(scope, type, date, if (type == ManagementRecordType.PRODUCAO_OVOS) "Produção de ovos" else "Produção de leite", productName = if (type == ManagementRecordType.PRODUCAO_OVOS) "Ovos" else "Leite", stockDirection = StockDirection.ENTRADA, quantity = amount.toString().toBigDecimal(), unit = unit, lotId = lotId)

@@ -13,6 +13,7 @@ data class ActivityLog(val id: String, val scope: FarmScope, val area: String, v
 class ActivityLogService(context: Context) {
     private val prefs = context.getSharedPreferences("rural_activity_log", Context.MODE_PRIVATE)
     fun list(scope: FarmScope, area: String): List<ActivityLog> = array().map(::entry).filter { it.scope == scope && it.area == area }.sortedByDescending { it.createdAt }
+    fun listAll(scope: FarmScope): List<ActivityLog> = array().map(::entry).filter { it.scope == scope }.sortedByDescending { it.createdAt }
     fun add(scope: FarmScope, area: String, description: String) {
         require(description.isNotBlank()) { "Descreva o registro." }
         val values = JSONArray(prefs.getString("entries", "[]"))

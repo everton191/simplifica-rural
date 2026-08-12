@@ -7,7 +7,7 @@ import java.time.LocalDateTime
 
 enum class ManagementRecordType {
     COMPRA, VENDA, DESPESA, CONSUMO_ESTOQUE, AJUSTE_ESTOQUE,
-    PRODUCAO_OVOS, PRODUCAO_LEITE, PESAGEM_SUINOS, PARTO_SUINOS
+    PRODUCAO_OVOS, PRODUCAO_LEITE, PESAGEM_SUINOS, PARTO_SUINOS, ESTORNO
 }
 
 enum class FinancialCategory(val isCashOperatingCost: Boolean = false, val isOpportunityCost: Boolean = false) {
@@ -29,6 +29,9 @@ enum class FinancialCategory(val isCashOperatingCost: Boolean = false, val isOpp
 }
 
 enum class StockDirection { ENTRADA, SAIDA }
+
+/** Identificador legível para evitar confundir compra, produção, consumo e venda no histórico. */
+enum class OperationFlow { ENTRADA_ESTOQUE, SAIDA_ESTOQUE, PRODUCAO, ENTRADA_CAIXA, SAIDA_CAIXA, REGISTRO_TECNICO }
 
 data class ManagementRecord(
     val id: String,
@@ -82,3 +85,15 @@ data class SwinePerformance(
     val weanedPerLitter: BigDecimal?,
     val preWeaningMortalityPercent: BigDecimal?
 )
+
+fun ManagementRecord.operationFlows(): Set<OperationFlow> = buildSet {
+    when (type) {
+        ManagementRecordType.COMPRA -> { add(OperationFlow.ENTRADA_ESTOQUE); add(OperationFlow.SAIDA_CAIXA) }
+        ManagementRecordType.VENDA -> { add(OperationFlow.ENTRADA_CAIXA); stockDirection?.let { add(if (it == StockDirection.ENTRADA) OperationFlow.ENTRADA_ESTOQUE else OperationFlow.SAIDA_ESTOQUE) } }
+        ManagementRecordType.DESPESA -> add(OperationFlow.SAIDA_CAIXA)
+        ManagementRecordType.CONSUMO_ESTOQUE -> add(OperationFlow.SAIDA_ESTOQUE)
+        ManagementRecordType.AJUSTE_ESTOQUE -> add(if (stockDirection == StockDirection.ENTRADA) OperationFlow.ENTRADA_ESTOQUE else OperationFlow.SAIDA_ESTOQUE)
+        ManagementRecordType.PRODUCAO_OVOS, ManagementRecordType.PRODUCAO_LEITE -> { add(OperationFlow.PRODUCAO); add(OperationFlow.ENTRADA_ESTOQUE) }
+        ManagementRecordType.PESAGEM_SUINOS, ManagementRecordType.PARTO_SUINOS, ManagementRecordType.ESTORNO -> add(OperationFlow.REGISTRO_TECNICO)
+    }
+}

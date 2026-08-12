@@ -23,8 +23,8 @@ class DeviceModelSelector(private val context: Context) {
         val storage = StatFs(context.filesDir.path).availableBytes
         return when {
             !isArm64 || storage < 700L * MB || memory < 1_700L * MB -> catalog.getValue(LocalModelProfile.SEM_MODELO)
-            storage >= 1_400L * MB && memory >= 3_000L * MB -> catalog.getValue(LocalModelProfile.PADRAO)
-            else -> catalog.getValue(LocalModelProfile.LEVE)
+            storage >= 3_100L * MB && memory >= 4_000L * MB -> catalog.getValue(LocalModelProfile.PADRAO)
+            else -> catalog.getValue(LocalModelProfile.SEM_MODELO)
         }
     }
 
@@ -32,8 +32,8 @@ class DeviceModelSelector(private val context: Context) {
         private const val MB = 1024L * 1024L
         val catalog = mapOf(
             LocalModelProfile.SEM_MODELO to LocalModelDescriptor(LocalModelProfile.SEM_MODELO, "", "", 0, ""),
-            LocalModelProfile.LEVE to LocalModelDescriptor(LocalModelProfile.LEVE, "qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm", "https://huggingface.co/litert-community/Qwen3-0.6B-int4/resolve/main/qwen3_0.6b_nothink_q4_block32_ekv1280.litertlm", 330L * MB, "2DF6821EC12702DAFD33915E7A1A1ADC7C4B053F3672FD9555DFAF3A114C4139"),
-            LocalModelProfile.PADRAO to LocalModelDescriptor(LocalModelProfile.PADRAO, "LFM2.5-1.2B-Instruct_int4.litertlm", "https://huggingface.co/litert-community/LFM2.5-1.2B-Instruct/resolve/main/LFM2.5-1.2B-Instruct_int4.litertlm", 700L * MB, "A28B5C59AC204E2E51C1F98D2D6DB6982F0E12DA59A268FE498EDCB33237E906")
+            LocalModelProfile.LEVE to LocalModelDescriptor(LocalModelProfile.LEVE, "", "", 0, ""),
+            LocalModelProfile.PADRAO to LocalModelDescriptor(LocalModelProfile.PADRAO, "gemma-4-E2B-it.litertlm", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", 2_588_147_712L, "181938105E0EEFD105961417E8DA75903EACDA102C4FCE9CE90F50B97139A63C")
         )
     }
 }
