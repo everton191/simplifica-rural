@@ -17,7 +17,10 @@ class RuralActionExecutor(context: Context) {
     fun executeConfirmed(action: RuralAction): ActionExecution = runCatching {
         val record = when (action) {
             is RuralAction.Purchase -> management.registerPurchase(action.scope, action.product, action.quantity.decimal(), action.unit, action.unitPrice.decimal(), action.category.category())
-            is RuralAction.Sale -> management.registerSale(action.scope, action.product, action.quantity.decimal(), action.unit, action.unitPrice.decimal(), receivedAmount = action.receivedAmount.decimal())
+            is RuralAction.Sale -> {
+                if (action.product.contains("bandeja", true) || action.product.contains("cartela", true)) management.registerEggTraySale(action.scope, action.product, action.quantity.decimal(), action.unit, action.unitPrice.decimal(), receivedAmount = action.receivedAmount.decimal())
+                else management.registerSale(action.scope, action.product, action.quantity.decimal(), action.unit, action.unitPrice.decimal(), receivedAmount = action.receivedAmount.decimal())
+            }
             is RuralAction.StockConsumption -> management.registerStockConsumption(action.scope, action.product, action.quantity.decimal(), action.unit)
             is RuralAction.EggProduction -> management.registerEggProduction(action.scope, action.quantity.toInt())
             is RuralAction.MilkProduction -> management.registerMilkProduction(action.scope, action.liters.decimal())

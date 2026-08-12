@@ -13,6 +13,9 @@ import br.com.simplificarural.domain.health.HealthEventType
 import br.com.simplificarural.data.local.MilkSecretaryService
 import br.com.simplificarural.data.local.MilkShift
 import br.com.simplificarural.domain.agenda.AgendaType
+import br.com.simplificarural.domain.reproduction.ReproductionStage
+import br.com.simplificarural.domain.orders.RuralOrderService
+import br.com.simplificarural.domain.inventory.PackagingConversionService
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.Normalizer
@@ -23,31 +26,47 @@ import java.time.format.DateTimeFormatter
 
 class RuralAssistant(private val context: Context) {
     private val modelRepository = AiModelRepository(context)
-    private val fallback = DeterministicCommandParser()
+    private val fallback = DeterministicCommandParser { scope -> PackagingConversionService(context).eggsPerPackage(scope, "Bandeja padrão") }
     private val store = LocalEventStore(context)
     private val farmContext = FarmContextStore(context)
     private val secretary = SecretaryConversationStore(context)
+    private val conversation = RuralConversationMemory(context)
 
     suspend fun handle(message: String, pending: AiDraft? = null, scope: FarmScope = farmContext.current()): AssistantResult {
         val understoodMessage = RuralLanguageNormalizer.normalize(message)
         val activePending = pending ?: secretary.pending(scope)
-        val deterministicDraft = fallback.continuePurchase(activePending, understoodMessage) ?: fallback.continueSale(activePending, understoodMessage) ?: fallback.parse(understoodMessage)
+        val deterministicDraft = fallback.continueFeedWeight(activePending, understoodMessage)
+            ?: fallback.continuePurchase(activePending, understoodMessage)
+            ?: fallback.continueSale(activePending, understoodMessage)
+            ?: fallback.continueSalePrice(activePending, understoodMessage)
+            ?: fallback.continueSaleReschedule(activePending, understoodMessage)
+            ?: fallback.parse(understoodMessage, scope)
+        val usedLocalAi = deterministicDraft.action == RuralActionType.DESCONHECIDA && modelRepository.isInstalled()
         val interpretedDraft = if (deterministicDraft.action != RuralActionType.DESCONHECIDA) {
             deterministicDraft
-        } else if (modelRepository.isInstalled()) {
-            runCatching { GemmaLocalAiEngine(context).interpret(understoodMessage, scope) }
+        } else if (usedLocalAi) {
+            runCatching {
+                AiDraft(
+                    RuralActionType.DESCONHECIDA,
+                    emptyMap(),
+                    GemmaLocalAiEngine(context).chat(understoodMessage, scope, conversation.history(scope)),
+                    requiresConfirmation = false
+                )
+            }
                 .getOrElse { deterministicDraft }
         } else deterministicDraft
         val draft = interpretedDraft.withAutomaticDateTime()
         if (draft.action !in setOf(RuralActionType.DESCONHECIDA, RuralActionType.CONSULTAR_RESUMO, RuralActionType.CONSULTAR_HISTORICO)) secretary.save(draft, scope)
-        return when (draft.action) {
+        val result = when (draft.action) {
             RuralActionType.DESCONHECIDA -> AssistantResult.Reply(
-                "Posso ajudar a registrar ovos, leite, ração ou despesa. Diga o que aconteceu hoje.", draft
+                if (usedLocalAi && draft.summary.isNotBlank()) draft.summary else "Posso ajudar a registrar ovos, leite, ração ou despesa. Diga o que aconteceu hoje.", draft
             )
             RuralActionType.CONSULTAR_RESUMO -> AssistantResult.Reply(store.summary(scope), draft)
             RuralActionType.CONSULTAR_HISTORICO -> AssistantResult.Reply(store.history(scope, LocalDate.parse(draft.parameters.getValue("data"))), draft)
             else -> AssistantResult.Reply(draft.summary, draft)
         }
+        conversation.append(scope, message, result.text)
+        return result
     }
 
     private fun AiDraft.withAutomaticDateTime(): AiDraft {
@@ -62,7 +81,13 @@ class RuralAssistant(private val context: Context) {
     fun confirm(draft: AiDraft, scope: FarmScope = farmContext.current()): String {
         require(draft.requiresConfirmation) { "Esta ação não precisa de confirmação." }
         val execution = draft.toRuralAction(scope)?.let(RuralActionExecutor(context)::executeConfirmed)
-        if (execution is ActionExecution.Rejected) return "Não salvei o registro: ${execution.reason}"
+        if (execution is ActionExecution.Rejected) {
+            if (draft.action == RuralActionType.REGISTRAR_VENDA_ESTOQUE && execution.reason.contains("Estoque insuficiente")) {
+                secretary.save(AiDraft(RuralActionType.INFORMAR_NOVA_DATA_VENDA, draft.parameters + ("motivo" to execution.reason), "Não fechei a venda: ${execution.reason} Deseja remarcar a entrega? Diga o novo dia, por exemplo 'dia 20/08'.", false), scope)
+                return "Não salvei a venda. ${execution.reason} Posso agendar a entrega para outro dia."
+            }
+            return "Não salvei o registro: ${execution.reason}"
+        }
         if (draft.action == RuralActionType.REGISTRAR_VENDA_ESTOQUE) {
             val balance = draft.parameters.getValue("saldoAberto").toBigDecimal()
             if (balance > java.math.BigDecimal.ZERO) ReceivableService(context).create(scope, draft.parameters.getValue("cliente"), balance, LocalDate.parse(draft.parameters.getValue("vencimento")), "Venda de ${draft.parameters.getValue("produto")}")
@@ -74,9 +99,16 @@ class RuralAssistant(private val context: Context) {
                 ?: return "Não salvei a vacina: cadastre primeiro ${draft.parameters.getValue("identificacao")} nesta propriedade."
             records.registerHealth(scope, target, draft.parameters.getValue("vacina"), HealthEventType.VACINA)
         }
+        if (draft.action == RuralActionType.REGISTRAR_PARTO_BOVINO) {
+            val records = AnimalRecordsService(context)
+            val target = records.findTarget(scope, AnimalSpecies.BOVINO, draft.parameters.getValue("identificacao"))
+                ?: return "Não salvei o parto: não encontrei a vaca ${draft.parameters.getValue("identificacao")}. Cadastre o nome e o brinco primeiro para manter o histórico individual."
+            records.registerReproduction(scope, target, ReproductionStage.PARTO, bornAlive = draft.parameters["nascidosVivos"]?.toIntOrNull(), bornDead = draft.parameters["nascidosMortos"]?.toIntOrNull(), notes = draft.parameters["observacao"])
+        }
         if (draft.action == RuralActionType.REGISTRAR_AGENDA) {
             val type = runCatching { AgendaType.valueOf(draft.parameters.getValue("tipo")) }.getOrDefault(AgendaType.OUTRO)
             AnimalRecordsService(context).schedule(scope, draft.parameters.getValue("titulo"), LocalDate.parse(draft.parameters.getValue("data")), type, notes = draft.parameters["observacao"])
+            draft.parameters["pedidoProduto"]?.let { product -> RuralOrderService(context).schedule(scope, draft.parameters.getValue("pedidoCliente"), product, draft.parameters.getValue("pedidoQuantidade").toBigDecimal(), draft.parameters.getValue("pedidoUnidade"), draft.parameters.getValue("pedidoPreco").toBigDecimal(), LocalDate.parse(draft.parameters.getValue("data")), draft.parameters.getValue("observacao")) }
         }
         if (draft.action == RuralActionType.REGISTRAR_LEITE) {
             val shift = runCatching { MilkShift.valueOf(draft.parameters["turno"] ?: MilkShift.NAO_INFORMADO.name) }.getOrDefault(MilkShift.NAO_INFORMADO)
@@ -155,6 +187,32 @@ class RuralAssistant(private val context: Context) {
 
 data class OperationalProposal(val actions: List<RuralAction>, val summary: String)
 
+private class RuralConversationMemory(context: Context) {
+    private val preferences = context.getSharedPreferences("rural_ai_conversation", Context.MODE_PRIVATE)
+
+    fun history(scope: FarmScope): List<RuralConversationMessage> = runCatching {
+        val stored = JSONArray(preferences.getString(scope.key(), "[]") ?: "[]")
+        buildList {
+            for (index in 0 until stored.length()) {
+                val item = stored.optJSONObject(index) ?: continue
+                add(RuralConversationMessage(item.optString("role"), item.optString("text")))
+            }
+        }.takeLast(12)
+    }.getOrDefault(emptyList())
+
+    fun append(scope: FarmScope, user: String, assistant: String) {
+        val updated = (history(scope) + listOf(
+            RuralConversationMessage("Usuário", user.take(700)),
+            RuralConversationMessage("Assistente", assistant.take(700))
+        )).takeLast(12)
+        preferences.edit().putString(scope.key(), JSONArray().apply {
+            updated.forEach { message -> put(JSONObject().put("role", message.role).put("text", message.text)) }
+        }.toString()).apply()
+    }
+
+    private fun FarmScope.key() = "conversation_${organizationId}_${farmId}_${unitId.orEmpty()}"
+}
+
 /** Keeps the secretary's open question locally. It never creates an operational record by itself. */
 private class SecretaryConversationStore(context: Context) {
     private val preferences = context.getSharedPreferences("rural_secretary", Context.MODE_PRIVATE)
@@ -223,7 +281,40 @@ internal object RuralLanguageNormalizer {
     }
 }
 
-internal class DeterministicCommandParser {
+internal class DeterministicCommandParser(private val eggsPerTray: (FarmScope) -> Int = { 30 }) {
+    fun continueSaleReschedule(pending: AiDraft?, message: String): AiDraft? {
+        if (pending?.action != RuralActionType.INFORMAR_NOVA_DATA_VENDA) return null
+        val due = parseDueDate(message) ?: return AiDraft(RuralActionType.INFORMAR_NOVA_DATA_VENDA, pending.parameters, "Qual novo dia devo agendar para a entrega? Exemplo: dia 20/08.", false)
+        val title = "Revisar venda de ${pending.parameters.getValue("quantidade")} ${pending.parameters.getValue("produto")}: estoque insuficiente"
+        return AiDraft(RuralActionType.REGISTRAR_AGENDA, mapOf("titulo" to title, "data" to due.toString(), "tipo" to AgendaType.ESTOQUE.name, "observacao" to pending.parameters.getValue("motivo"), "pedidoProduto" to pending.parameters.getValue("produto"), "pedidoQuantidade" to pending.parameters.getValue("quantidade"), "pedidoUnidade" to pending.parameters.getValue("unidade"), "pedidoPreco" to pending.parameters.getValue("precoUnitario"), "pedidoCliente" to pending.parameters.getValue("cliente")), "Preparei um pedido agendado para $due: $title. Confirme para salvar pedido e lembrete.")
+    }
+
+    fun continueFeedWeight(pending: AiDraft?, message: String): AiDraft? {
+        if (pending?.action != RuralActionType.INFORMAR_PESO_SACO_RACAO) return null
+        val kg = Regex("(\\d+(?:[,.]\\d+)?)\\s*kg").find(message)?.groupValues?.get(1)?.replace(',', '.')?.toBigDecimalOrNull()
+            ?: return AiDraft(RuralActionType.INFORMAR_PESO_SACO_RACAO, pending.parameters, "Quantos kg há em cada saco? Exemplo: '50 kg por saco'.", false)
+        if (kg <= java.math.BigDecimal.ZERO) return AiDraft(RuralActionType.INFORMAR_PESO_SACO_RACAO, pending.parameters, "O peso por saco precisa ser maior que zero.", false)
+        val sacks = pending.parameters.getValue("sacos").toBigDecimal()
+        val total = sacks * kg
+        return AiDraft(RuralActionType.INFORMAR_PRECO_COMPRA, mapOf("produto" to "Ração", "quantidade" to total.stripTrailingZeros().toPlainString(), "unidade" to "kg", "lotes" to sacks.stripTrailingZeros().toPlainString(), "unidadesPorLote" to kg.stripTrailingZeros().toPlainString()), "Entendi $sacks sacos de $kg kg: $total kg de ração. Qual foi o preço por saco, por kg ou o total da compra?", false)
+    }
+
+    fun continueSalePrice(pending: AiDraft?, message: String): AiDraft? {
+        if (pending?.action != RuralActionType.INFORMAR_PRECO_VENDA) return null
+        val unitPrice = Regex("(\\d+(?:[,.]\\d+)?)").find(message)?.groupValues?.get(1)?.replace(',', '.')?.toBigDecimalOrNull()
+            ?: return AiDraft(RuralActionType.INFORMAR_PRECO_VENDA, pending.parameters, "Qual foi o preço de cada bandeja? Exemplo: '15 reais cada'.", false)
+        if (unitPrice <= java.math.BigDecimal.ZERO) return AiDraft(RuralActionType.INFORMAR_PRECO_VENDA, pending.parameters, "O preço precisa ser maior que zero. Quanto recebeu por bandeja?", false)
+        val quantity = pending.parameters.getValue("quantidade").toBigDecimal()
+        val total = quantity * unitPrice
+        return saleConfirmation(pending.parameters + mapOf(
+            "precoUnitario" to unitPrice.stripTrailingZeros().toPlainString(),
+            "valorTotal" to total.stripTrailingZeros().toPlainString(),
+            "valorRecebido" to total.stripTrailingZeros().toPlainString(),
+            "saldoAberto" to "0",
+            "vencimento" to ""
+        ))
+    }
+
     fun continueSale(pending: AiDraft?, message: String): AiDraft? {
         if (pending?.action != RuralActionType.INFORMAR_VENCIMENTO_VENDA) return null
         val due = parseDueDate(message) ?: return AiDraft(RuralActionType.INFORMAR_VENCIMENTO_VENDA, pending.parameters, "Qual é a data combinada para o restante? Diga, por exemplo, ‘dia 20/08’.", false)
@@ -248,15 +339,17 @@ internal class DeterministicCommandParser {
         return AiDraft(RuralActionType.REGISTRAR_COMPRA_ESTOQUE, parameters, "Preparei a compra de ${parameters.getValue("quantidade")} ${parameters.getValue("unidade")} de ${parameters.getValue("produto")} por R$ ${parameters.getValue("precoUnitario")} cada (total R$ ${parameters.getValue("valorTotal")}). Confirme para atualizar estoque e caixa.")
     }
 
-    fun parse(message: String): AiDraft {
+    fun parse(message: String, scope: FarmScope = FarmScope("local-organization", "default-farm")): AiDraft {
         val normalized = message.lowercase()
         val history = parseHistory(normalized)
         val agenda = parseAgenda(normalized)
         val sale = parseSale(normalized)
         val purchase = parsePurchase(normalized)
-        val eggs = calculateEggs(normalized)
+        val feedPurchase = parseFeedPurchase(normalized)
+        val eggs = calculateEggs(normalized, eggsPerTray(scope))
         val milk = calculateMilk(normalized)
         val vaccine = parseVaccine(normalized)
+        val cattleBirth = parseCattleBirth(normalized)
         val feed = if (normalized.contains("racao")) {
             Regex("(\\d+(?:[,.]\\d+)?)\\s*(?:kg|quilos?)").find(normalized)?.groupValues?.get(1)
         } else null
@@ -265,12 +358,14 @@ internal class DeterministicCommandParser {
             history != null -> history
             agenda != null -> agenda
             vaccine != null -> vaccine
+            cattleBirth != null -> cattleBirth
             sale != null -> sale
+            feedPurchase != null -> feedPurchase
             purchase != null -> purchase
             eggs != null -> {
                 val recordedAt = LocalDateTime.now()
-                val fullTrays = eggs.net / EGGS_PER_TRAY
-                val remainingEggs = eggs.net % EGGS_PER_TRAY
+                val fullTrays = eggs.net / eggs.eggsPerTray
+                val remainingEggs = eggs.net % eggs.eggsPerTray
                 val parameters = buildMap {
                     put("ovos", eggs.net.toString())
                     put("data", recordedAt.toLocalDate().toString())
@@ -284,17 +379,18 @@ internal class DeterministicCommandParser {
                     feed?.let { put("racaoKg", it) }
                 }
                 val eggDescription = eggs.description()
-                val traysDescription = if (remainingEggs == 0) "$fullTrays bandejas de 30 ovos" else "$fullTrays bandejas e $remainingEggs ovos avulsos"
+                val traysDescription = if (remainingEggs == 0) "$fullTrays bandejas de ${eggs.eggsPerTray} ovos" else "$fullTrays bandejas e $remainingEggs ovos avulsos"
                 val summary = if (feed != null) {
                     "Preparei o depósito de $eggDescription, equivalente a $traysDescription, em ${parameters.getValue("data")} às ${parameters.getValue("hora")}, e $feed kg de ração."
                 } else "Preparei o depósito de $eggDescription, equivalente a $traysDescription, em ${parameters.getValue("data")} às ${parameters.getValue("hora")}."
                 AiDraft(RuralActionType.REGISTRAR_OVOS, parameters, summary)
             }
             milk != null -> {
-                val shift = when { normalized.contains("manha") -> MilkShift.MANHA; normalized.contains("tarde") -> MilkShift.TARDE; normalized.contains("noite") -> MilkShift.NOITE; else -> MilkShift.NAO_INFORMADO }
+                val shift = when { normalized.contains("manha") -> MilkShift.MANHA; normalized.contains("tarde") -> MilkShift.TARDE; normalized.contains("noite") || normalized.contains("terceira") -> MilkShift.NOITE; else -> MilkShift.automatic(LocalDateTime.now().hour) }
                 AiDraft(RuralActionType.REGISTRAR_LEITE, mapOf("litros" to milk.total.toString(), "data" to "hoje", "tambores" to milk.drums.toString(), "litrosPorTambor" to milk.capacity.toString(), "turno" to shift.name), "Preparei o registro de ${milk.description()} de leite para hoje, turno ${shift.name.lowercase()}.")
             }
-            feed != null -> AiDraft(RuralActionType.REGISTRAR_RACAO, mapOf("racaoKg" to feed, "data" to "hoje"), "Preparei o registro de $feed kg de ração para hoje.")
+            feed != null && (normalized.contains("comprei") || normalized.contains("compramos") || normalized.contains("adquiri")) -> AiDraft(RuralActionType.INFORMAR_PRECO_COMPRA, mapOf("produto" to "Ração", "quantidade" to feed, "unidade" to "kg", "lotes" to "1", "unidadesPorLote" to feed), "Entendi a compra de $feed kg de ração. Qual foi o preço por saco, por kg ou o valor total para eu atualizar estoque e caixa?", false)
+            feed != null -> AiDraft(RuralActionType.REGISTRAR_RACAO, mapOf("racaoKg" to feed, "data" to "hoje"), "Preparei o consumo de $feed kg de ração para hoje. Confirme somente se a ração foi usada; para compra, diga também que comprou e informe o valor.")
             normalized.contains("despesa") || normalized.contains("gastei") -> AiDraft(RuralActionType.REGISTRAR_DESPESA, emptyMap(), "Preparei uma nova despesa. Confira os dados antes de confirmar.")
             normalized.contains("resumo") -> AiDraft(RuralActionType.CONSULTAR_RESUMO, emptyMap(), "Consultando o resumo local.", false)
             else -> AiDraft(RuralActionType.DESCONHECIDA, emptyMap(), "Não reconheci um registro seguro.", false)
@@ -336,13 +432,28 @@ internal class DeterministicCommandParser {
         return AiDraft(RuralActionType.REGISTRAR_VACINA, mapOf("especie" to species.name, "identificacao" to target, "vacina" to vaccine), "Preparei o histórico: $target recebeu vacina de $vaccine hoje. Confirme para registrar no histórico do animal ou lote.")
     }
 
+    private fun parseCattleBirth(message: String): AiDraft? {
+        if (!listOf("tomou cria", "deu cria", "pariu", "parto").any(message::contains)) return null
+        val target = Regex("(?:vaca|novilha)\\s+([a-z0-9-]+)").find(message)?.groupValues?.get(1)
+            ?.replaceFirstChar { it.uppercase() } ?: return AiDraft(RuralActionType.DESCONHECIDA, emptyMap(), "Qual é o nome ou brinco da vaca que pariu?", false)
+        val alive = Regex("(\\d+)\\s*(?:bezerros?|crias?)\\s*(?:vivos?|nascidos vivos?)").find(message)?.groupValues?.get(1)
+        val dead = Regex("(\\d+)\\s*(?:bezerros?|crias?)\\s*(?:mortos?|natimortos?)").find(message)?.groupValues?.get(1)
+        return AiDraft(RuralActionType.REGISTRAR_PARTO_BOVINO, buildMap { put("identificacao", target); alive?.let { put("nascidosVivos", it) }; dead?.let { put("nascidosMortos", it) } }, "Preparei o parto de $target para hoje. ${alive?.let { "$it bezerro(s) vivo(s). " }.orEmpty()}Confirme para salvar no histórico reprodutivo da vaca.")
+    }
+
     private fun parseSale(message: String): AiDraft? {
         if (!(message.contains("vendi") || message.contains("vende"))) return null
-        val match = Regex("(\\d+)\\s*(bandejas?|cartelas?)\\s*(?:de\\s*)?(?:ovos?)?\\s*(?:a|por)\\s*(\\d+(?:[,.]\\d+)?)").find(message) ?: return null
+        val quantityMatch = Regex("(\\d+)\\s*(bandejas?|cartelas?)\\s*(?:de\\s*)?(?:ovos?)?").find(message) ?: return null
+        val priceMatch = Regex("(?:a|por)\\s*(\\d+(?:[,.]\\d+)?)").find(message.substring(quantityMatch.range.last + 1))
+        if (priceMatch == null) {
+            val product = if (quantityMatch.groupValues[2].startsWith("cartel")) "Cartelas de ovos" else "Bandejas de ovos"
+            return AiDraft(RuralActionType.INFORMAR_PRECO_VENDA, mapOf("produto" to product, "quantidade" to quantityMatch.groupValues[1], "unidade" to "unidades", "cliente" to "Cliente não informado"), "Entendi a venda de ${quantityMatch.groupValues[1]} $product. Qual foi o preço de cada bandeja para eu baixar do estoque e lançar no caixa?", false)
+        }
+        val match = quantityMatch
         val quantity = match.groupValues[1].toBigDecimal()
         val product = if (match.groupValues[2].startsWith("cartel")) "Cartelas de ovos" else "Bandejas de ovos"
-        val unitPrice = match.groupValues[3].replace(',', '.').toBigDecimal()
-        val customer = Regex("(?:a|para)\\s+([a-z]+)").find(message.substring(match.range.last + 1))?.groupValues?.get(1)?.replaceFirstChar { it.uppercase() } ?: "Cliente não informado"
+        val unitPrice = priceMatch.groupValues[1].replace(',', '.').toBigDecimal()
+        val customer = Regex("(?:a|para)\\s+([a-z]+)").find(message.substring(quantityMatch.range.last + 1))?.groupValues?.get(1)?.replaceFirstChar { it.uppercase() } ?: "Cliente não informado"
         val total = quantity * unitPrice
         val paid = when {
             message.contains("metade") -> total.divide(java.math.BigDecimal(2))
@@ -389,7 +500,19 @@ internal class DeterministicCommandParser {
         return AiDraft(RuralActionType.INFORMAR_PRECO_COMPRA, parameters, "Entendi $lots lotes de $unitsPerLot $product cada: $quantity unidades. Quanto custou cada lote ou qual foi o valor total da compra?", false)
     }
 
-    private fun calculateEggs(message: String): EggTotal? {
+    private fun parseFeedPurchase(message: String): AiDraft? {
+        if (!(message.contains("comprei") || message.contains("compramos") || message.contains("adquiri")) || !message.contains("racao")) return null
+        val sacks = Regex("(\\d+)\\s*sacos?").find(message)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val kgPerSack = Regex("sacos?.*?(\\d+(?:[,.]\\d+)?)\\s*kg").find(message)?.groupValues?.get(1)?.replace(',', '.')?.toBigDecimalOrNull()
+        return if (kgPerSack == null) {
+            AiDraft(RuralActionType.INFORMAR_PESO_SACO_RACAO, mapOf("produto" to "Ração", "sacos" to sacks.toString()), "Entendi a compra de $sacks sacos de ração. Quantos kg há em cada saco?", false)
+        } else {
+            val totalKg = kgPerSack * sacks.toBigDecimal()
+            AiDraft(RuralActionType.INFORMAR_PRECO_COMPRA, mapOf("produto" to "Ração", "quantidade" to totalKg.stripTrailingZeros().toPlainString(), "unidade" to "kg", "lotes" to sacks.toString(), "unidadesPorLote" to kgPerSack.stripTrailingZeros().toPlainString()), "Entendi $sacks sacos de ${kgPerSack.stripTrailingZeros().toPlainString()} kg: $totalKg kg de ração. Qual foi o preço por saco, por kg ou o valor total?", false)
+        }
+    }
+
+    private fun calculateEggs(message: String, eggsPerTray: Int): EggTotal? {
         if (listOf("ovo", "bandeja", "apanhei", "coletei").none(message::contains)) return null
         val lotPattern = Regex("(\\d+)\\s*lotes?\\s*(?:de|com)?\\s*(\\d+)(?:\\s*bandejas?)?")
         var lots = 0
@@ -405,8 +528,8 @@ internal class DeterministicCommandParser {
         val loose = Regex("(\\d+)\\s*ovos?").findAll(message).sumOf { it.groupValues[1].toIntOrNull() ?: 0 }
         val discarded = Regex("(\\d+)\\s*(?:ovos?\\s*)?(?:foram\\s*)?(?:quebrados?|descartados?|perdidos?)")
             .findAll(message).sumOf { it.groupValues[1].toIntOrNull() ?: 0 }
-        val gross = trays * EGGS_PER_TRAY + loose
-        return gross.takeIf { it > 0 }?.let { EggTotal(lots, trays, loose, gross, discarded, (gross - discarded).coerceAtLeast(0)) }
+        val gross = trays * eggsPerTray + loose
+        return gross.takeIf { it > 0 }?.let { EggTotal(lots, trays, loose, gross, discarded, (gross - discarded).coerceAtLeast(0), eggsPerTray) }
     }
 
     private fun calculateMilk(message: String): MilkTotal? {
@@ -423,10 +546,10 @@ internal class DeterministicCommandParser {
         return total.takeIf { it > 0 && (drums > 0 || message.contains("leite")) }?.let { MilkTotal(drums, capacity, loose, total) }
     }
 
-    private data class EggTotal(val lots: Int, val trays: Int, val loose: Int, val gross: Int, val discarded: Int, val net: Int) {
+    private data class EggTotal(val lots: Int, val trays: Int, val loose: Int, val gross: Int, val discarded: Int, val net: Int, val eggsPerTray: Int) {
         fun description(): String = buildList {
             lots.takeIf { it > 0 }?.let { add("$it lotes") }
-            trays.takeIf { it > 0 }?.let { add("$it bandejas (${it * EGGS_PER_TRAY} ovos)") }
+            trays.takeIf { it > 0 }?.let { add("$it bandejas (${it * eggsPerTray} ovos)") }
             loose.takeIf { it > 0 }?.let { add("$it ovos avulsos") }
         }.joinToString(" + ") + if (discarded > 0) " − $discarded descartados = $net ovos líquidos" else " = $net ovos"
     }
@@ -439,7 +562,6 @@ internal class DeterministicCommandParser {
     }
 
     private companion object {
-        const val EGGS_PER_TRAY = 30
         const val DEFAULT_DRUM_LITERS = 50
     }
 }

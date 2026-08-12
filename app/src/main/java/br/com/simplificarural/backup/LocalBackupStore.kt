@@ -16,6 +16,14 @@ data class LocalBackup(val file: File, val createdAt: Instant)
  * Files are written atomically so an interrupted backup never replaces a valid one.
  */
 class LocalBackupStore(private val context: Context) {
+    fun recent(): List<LocalBackup> {
+        val directory = File(context.filesDir, BACKUP_DIRECTORY)
+        return directory.listFiles { file -> file.isFile && file.name.startsWith("simplifica-rural-") && file.extension == "json" }
+            ?.sortedByDescending(File::lastModified)
+            ?.map { LocalBackup(it, Instant.ofEpochMilli(it.lastModified())) }
+            .orEmpty()
+    }
+
     fun create(): LocalBackup {
         val createdAt = Instant.now()
         val directory = File(context.filesDir, BACKUP_DIRECTORY).apply { mkdirs() }

@@ -2,13 +2,19 @@
 
 Aplicativo Android offline-first para pequenas propriedades com aves, bovinos e caixa.
 
-## IA local
+Versão atual: **0.1.2** (`versionCode 3`).
 
-Ao abrir o Assistente Rural, o aplicativo agenda o download automático por Wi-Fi do modelo Gemma 3 1B INT4 no formato LiteRT (`.task`). O download é de aproximadamente 556 MB e permanece no armazenamento privado do aplicativo.
+## IA local compartilhada
 
-O modelo somente interpreta mensagens em ações estruturadas. O aplicativo valida, mostra uma prévia e só executará alterações quando o usuário confirmar.
+Ao abrir o aplicativo, o Simplifica Rural consulta o provedor da família Simplifica e solicita automaticamente o Gemma 4 E2B. O modelo é baixado uma única vez, validado e compartilhado com Simplifica Tec e Simplifica 3D.
 
-O modelo escolhido é o Gemma 3 1B LiteRT porque possui artefato Android pronto para o runtime MediaPipe. A interface `LocalAiEngine` permite acrescentar LFM2.5/llama.cpp depois sem alterar ações ou regras de negócio.
+O download só é liberado em aparelho ARM64 com memória próxima de 6 GB ou mais e pelo menos 3,1 GB livres. Se o aparelho não atender aos requisitos, o Rural mostra o motivo e mantém as demais funções disponíveis sem tentar baixar o modelo.
+
+O modelo interpreta mensagens em ações estruturadas. O aplicativo valida, mostra uma prévia e só executa alterações quando o usuário confirma.
+
+Perguntas comuns são respondidas como uma conversa normal. As 12 mensagens mais recentes são enviadas ao modelo e até 12 pares de conversa ficam guardados por propriedade para preservar o contexto após reabrir o aplicativo.
+
+Consulte [Validação 0.1.2](docs/VALIDACAO-0.1.2.md) para os testes executados e os cenários que dependem do ambiente.
 
 ## Abrir
 

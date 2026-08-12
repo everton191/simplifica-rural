@@ -80,4 +80,37 @@ class RuralLanguageNormalizerTest {
         assertEquals(RuralActionType.REGISTRAR_VENDA_ESTOQUE, confirmation?.action)
         assertEquals("2026-08-20", confirmation?.parameters?.get("vencimento"))
     }
+
+    @Test fun `venda sem preco nao vira entrada de estoque`() {
+        val sale = parser.parse(RuralLanguageNormalizer.normalize("vendi 40 bandejas de ovos"))
+        assertEquals(RuralActionType.INFORMAR_PRECO_VENDA, sale.action)
+        val confirmation = parser.continueSalePrice(sale, RuralLanguageNormalizer.normalize("15 reais cada"))
+        assertEquals(RuralActionType.REGISTRAR_VENDA_ESTOQUE, confirmation?.action)
+        assertEquals("600", confirmation?.parameters?.get("valorTotal"))
+    }
+
+    @Test fun `venda calcula total e transforma falta de estoque em agenda`() {
+        val sale = parser.parse(RuralLanguageNormalizer.normalize("vendi 20 bandejas de ovos"))
+        val priced = parser.continueSalePrice(sale, RuralLanguageNormalizer.normalize("14 reais cada"))
+        assertEquals("280", priced?.parameters?.get("valorTotal"))
+        val pending = AiDraft(RuralActionType.INFORMAR_NOVA_DATA_VENDA, priced!!.parameters + ("motivo" to "Estoque insuficiente"), "", false)
+        val agenda = parser.continueSaleReschedule(pending, RuralLanguageNormalizer.normalize("dia 20/08"))
+        assertEquals(RuralActionType.REGISTRAR_AGENDA, agenda?.action)
+        assertEquals("2026-08-20", agenda?.parameters?.get("data"))
+    }
+
+    @Test fun `compra de racao por sacos coleta peso antes do preco`() {
+        val purchase = parser.parse(RuralLanguageNormalizer.normalize("comprei 50 sacos de racao"))
+        assertEquals(RuralActionType.INFORMAR_PESO_SACO_RACAO, purchase.action)
+        val withWeight = parser.continueFeedWeight(purchase, RuralLanguageNormalizer.normalize("50 kg por saco"))
+        assertEquals(RuralActionType.INFORMAR_PRECO_COMPRA, withWeight?.action)
+        assertEquals("2500", withWeight?.parameters?.get("quantidade"))
+    }
+
+    @Test fun `entende parto bovino por tomou cria`() {
+        val draft = parser.parse(RuralLanguageNormalizer.normalize("vaca fulana tomou cria hoje 1 bezerro vivo"))
+        assertEquals(RuralActionType.REGISTRAR_PARTO_BOVINO, draft.action)
+        assertEquals("Fulana", draft.parameters["identificacao"])
+        assertEquals("1", draft.parameters["nascidosVivos"])
+    }
 }

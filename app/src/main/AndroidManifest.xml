@@ -1,8 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <provider android:authorities="br.com.simplifica.ai.provider" />
+    </queries>
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="br.com.simplifica.ai.permission.USE_LOCAL_AI" />
 
     <application
         android:allowBackup="false"
@@ -10,9 +14,6 @@
         android:roundIcon="@drawable/ic_simplifica_rural_logo"
         android:label="Simplifica Rural"
         android:theme="@style/Theme.SimplificaRural">
-        <uses-native-library android:name="libOpenCL.so" android:required="false" />
-        <uses-native-library android:name="libOpenCL-car.so" android:required="false" />
-        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
