@@ -9,7 +9,7 @@ O aplicativo é centrado na propriedade: Organização → Fazenda → Unidade/S
 - `data/local/`: destino da próxima migração do armazenamento temporário para Room.
 - `backup/`: backup local e conexão futura com nuvem.
 - `ai/`: interpretação; `ai/actions/` valida e só executa ações confirmadas.
-- `ui/`: será criada quando autorizada, consumindo os serviços e repositórios; não contém regras financeiras.
+- `ui/`: telas Jetpack Compose organizadas por feature/domínio (`home/`, `animals/`, `poultry/`, `cattle/`, `swine/`, `inventory/`, `financial/`, `production/`, `health/`, `agenda/`, `orders/`, `settings/`, `backup/`, `common/`); `ui/components/` para componentes compartilhados; `ui/navigation/` para bottom navigation e dispatcher de rotas; `ui/assistant/` para tela, voz e política de destinos da assistente; consome os serviços e repositórios sem hospedar regras financeiras centrais.
 
 ## Módulos do domínio
 
@@ -27,4 +27,4 @@ Uma compra ou venda é uma única ação de negócio: a implementação final em
 
 ## Próxima evolução técnica
 
-Migrar `SharedPreferences` para Room, implementar os repositórios locais e então construir as telas modulares. Esse caminho preserva a base atual sem bloquear o uso offline.
+Migrar `SharedPreferences` para Room e implementar os repositórios locais. Esse caminho preserva a base atual sem bloquear o uso offline.

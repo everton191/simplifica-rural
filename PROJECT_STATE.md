@@ -8,7 +8,7 @@ Concluído: base Android; camada de IA local; download sob demanda do modelo; co
 
 Bovinos: cadastro local individual por nome/brinco/peso/fase; ordenhas por vaca e médias; ingredientes e misturas por quilograma; análise estimada de matéria seca, proteína bruta, NDT e energia; estimativa configurável de concentrado e silagem. Não é prescrição nutricional e deve usar análise de alimentos e validação de nutricionista animal.
 
-Interface: Home compacta, módulos de aves, bovinos, suínos, estoque, financeiro, agenda, saúde, produção e secretária. Histórico geral, backup local e sobre possuem telas próprias; os formulários mantêm data e hora automáticas para novos registros.
+Interface: telas Compose organizadas por domínio/feature, com shell principal separado (`SimplificaRuralApp`), dispatcher de rotas em `ui/navigation`, componentes compartilhados em `ui/components` e assistente isolada em `ui/assistant`; Home compacta, módulos de aves, bovinos, suínos, estoque, financeiro, agenda, saúde, produção e secretária. Histórico geral, backup local e sobre possuem telas próprias; os formulários mantêm data e hora automáticas para novos registros.
 
 Arquitetura: Propriedade/Fazenda/Unidade como escopo obrigatório; módulos de animais, produção, estoque, financeiro, saúde, reprodução e agenda; ações de IA passam por validação e confirmação. Detalhes em `ARCHITECTURE.md`.
 
