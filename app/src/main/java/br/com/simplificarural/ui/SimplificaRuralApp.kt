@@ -77,6 +77,7 @@ import br.com.simplificarural.ui.backup.*
 import br.com.simplificarural.ui.components.*
 import br.com.simplificarural.ui.financial.*
 import br.com.simplificarural.ui.health.*
+import br.com.simplificarural.ui.home.*
 import br.com.simplificarural.ui.inventory.*
 import br.com.simplificarural.ui.navigation.*
 import br.com.simplificarural.ui.orders.*
@@ -174,35 +175,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     RuralRoutes.PACKAGING -> PackagingScreen(back, message)
     RuralRoutes.ORDERS -> OrdersScreen(back, message)
     else -> when { route.startsWith("${RuralRoutes.STOCK_DETAIL}/") -> StockDetailScreen(route.removePrefix("${RuralRoutes.STOCK_DETAIL}/"), back, open); route.startsWith("${RuralRoutes.STOCK_ADD}/") -> StockAddScreen(back, message, route.removePrefix("${RuralRoutes.STOCK_ADD}/")); route.startsWith("${RuralRoutes.CATTLE_DETAIL}/") -> CattleProfileDetailScreen(route.removePrefix("${RuralRoutes.CATTLE_DETAIL}/"), back); route.startsWith(RuralRoutes.FEATURE_PREFIX) && route.removePrefix(RuralRoutes.FEATURE_PREFIX).contains("Relatórios", true) -> AreaReportScreen(route.removePrefix(RuralRoutes.FEATURE_PREFIX), back); route.startsWith(RuralRoutes.FEATURE_PREFIX) -> FeatureScreen(route.removePrefix(RuralRoutes.FEATURE_PREFIX), back, message); else -> PlaceholderScreen("Tela não encontrada", back) }
-}
-
-
-
-
-@Composable private fun HomeScreen(open: (String) -> Unit) = Page("Simplifica Rural", FarmContextStore(LocalContext.current).farmName(), actions = { IconButton({ open(RuralRoutes.AGENDA) }) { Icon(Icons.Default.Notifications, "Avisos") }; IconButton({ open(RuralRoutes.SETTINGS) }) { Icon(Icons.Default.Settings, "Configurações") } }) {
-    val context = LocalContext.current
-    val farmScope = remember { FarmContextStore(context).current() }; var period by remember { mutableIntStateOf(0) }
-    val records = remember(period) { FarmManagementService(context).records(CashViewScope.SelectedUnit(farmScope)) }
-    val financial = remember { FarmManagementService(context).financialResult(CashViewScope.SelectedUnit(farmScope)) }
-    val start = when (period) { 1 -> LocalDate.now().minusDays(6); 2 -> LocalDate.now().withDayOfMonth(1); else -> LocalDate.now() }
-    val eggs = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS && !it.date.isBefore(start) }.sumOf { it.quantity?.toInt() ?: 0 }
-    val milk = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE && !it.date.isBefore(start) }.fold(BigDecimal.ZERO) { total, item -> total + (item.quantity ?: BigDecimal.ZERO) }
-    val latestBird = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS }.maxByOrNull { it.createdAt }
-    val latestCattle = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE }.maxByOrNull { it.createdAt }
-    val latestSwine = records.filter { it.type in setOf(br.com.simplificarural.domain.management.ManagementRecordType.PESAGEM_SUINOS, br.com.simplificarural.domain.management.ManagementRecordType.PARTO_SUINOS) }.maxByOrNull { it.createdAt }
-    fun latestText(record: br.com.simplificarural.domain.management.ManagementRecord?, empty: String) = record?.let { "Último: ${it.date} • ${it.description}" } ?: empty
-    val periodName = listOf("hoje", "na semana", "no mês")[period]
-    Segment(listOf("Hoje", "Semana", "Mês")) { period = it }
-    Text("Produção $periodName", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    ActivityCard("Aves", "$eggs ovos $periodName", latestText(latestBird, "Sem produção confirmada ainda"), null, Icons.Default.Egg, { open(RuralRoutes.BIRDS) })
-    ActivityCard("Bovinos", "${milk.stripTrailingZeros().toPlainString()} L $periodName", latestText(latestCattle, "Sem ordenha confirmada ainda"), null, Icons.Default.Pets, { open(RuralRoutes.CATTLE) })
-    ActivityCard("Suínos", "Lotes e desempenho", latestText(latestSwine, "Sem pesagem ou parto confirmado"), null, Icons.Default.Pets, { open(RuralRoutes.SWINE) })
-    RecentProductionHistory(records, open)
-    Text("Gestão", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    FinancialCard(financial) { open(RuralRoutes.FINANCE) }
-    Text("Atalhos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    Button({ open(RuralRoutes.ASSISTANT) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.AutoAwesome, null); Spacer(Modifier.width(8.dp)); Text("Falar com a secretária") }
-    NoticeCard({ open(RuralRoutes.AGENDA) })
 }
 
 @Composable private fun AnimalRow(name: String, status: String, open: () -> Unit, onSold: () -> Unit, onDelete: () -> Unit) { var menu by remember { mutableStateOf(false) }; PressCard(open) { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(name, fontWeight = FontWeight.Bold); Text(status, color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) }; Box { IconButton({ menu = true }) { Icon(Icons.Default.MoreVert, "Mais ações") }; DropdownMenu(menu, { menu = false }) { DropdownMenuItem({ Text("Abrir") }, { menu = false; open() }); DropdownMenuItem({ Text("Marcar como vendido") }, { menu = false; onSold() }); DropdownMenuItem({ Text("Excluir") }, { menu = false; onDelete() }) } } } } }
