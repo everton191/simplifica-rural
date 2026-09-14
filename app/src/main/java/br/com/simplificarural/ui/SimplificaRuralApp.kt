@@ -71,6 +71,7 @@ import br.com.simplificarural.domain.orders.RuralOrderService
 import br.com.simplificarural.domain.nutrition.*
 import br.com.simplificarural.domain.property.FarmContextStore
 import br.com.simplificarural.ui.agenda.*
+import br.com.simplificarural.ui.animals.*
 import br.com.simplificarural.ui.backup.*
 import br.com.simplificarural.ui.components.*
 import br.com.simplificarural.ui.health.*
@@ -198,14 +199,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     NoticeCard({ open(RuralRoutes.AGENDA) })
 }
 
-@Composable private fun AnimalsScreen(open: (String) -> Unit) = Page("Animais", "Gerencie as criações da propriedade.") {
-    val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val records = remember { AnimalRecordsService(context) }; val aves = remember { records.batches(scope, AnimalSpecies.AVE).sumOf { it.currentQuantity } }; val bovinos = remember { records.animals(scope, AnimalSpecies.BOVINO).count { it.status == br.com.simplificarural.domain.animals.AnimalStatus.ATIVO } }; val suinos = remember { records.batches(scope, AnimalSpecies.SUINO).sumOf { it.currentQuantity } + records.animals(scope, AnimalSpecies.SUINO).count { it.status == br.com.simplificarural.domain.animals.AnimalStatus.ATIVO } }
-    ActivityCard("Aves", "$aves animais", "Lotes, ovos, ração e saúde", null, Icons.Default.Egg, { open(RuralRoutes.BIRDS) }, "Abrir")
-    ActivityCard("Bovinos", "$bovinos animais", "Animais, leite, ração e saúde", null, Icons.Default.Pets, { open(RuralRoutes.CATTLE) }, "Abrir")
-    ActivityCard("Suínos", "$suinos animais", "Engorda, matrizes, ração e saúde", null, Icons.Default.Pets, { open(RuralRoutes.SWINE) }, "Abrir")
-    Text("Adicionar criação", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    QuickGrid(listOf("Lote de aves" to RuralRoutes.BIRD_LOTS, "Lote suíno" to RuralRoutes.SWINE_LOTS, "Novo bovino" to RuralRoutes.CATTLE_NEW), open)
-}
 
 @Composable private fun BirdsScreen(open: (String) -> Unit) = Page("Aves") {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val animalRecords = remember { AnimalRecordsService(context) }; val management = remember { FarmManagementService(context) }
