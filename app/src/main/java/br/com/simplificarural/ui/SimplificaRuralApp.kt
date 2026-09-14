@@ -72,6 +72,7 @@ import br.com.simplificarural.domain.nutrition.*
 import br.com.simplificarural.domain.property.FarmContextStore
 import br.com.simplificarural.ui.agenda.*
 import br.com.simplificarural.ui.animals.*
+import br.com.simplificarural.ui.assistant.*
 import br.com.simplificarural.ui.cattle.*
 import br.com.simplificarural.ui.common.*
 import br.com.simplificarural.ui.backup.*
@@ -199,57 +200,4 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
         confirmButton = { Button(onClick = { if (editing) { proposal = assistant.analyzeOperationalSituation(situation); editing = proposal == null; if (proposal == null) applied = "Não consegui interpretar a correção." } else { proposal?.let { applied = assistant.applyOperationalProposal(it) }; showProposal = false } }) { Text(if (editing) "Atualizar proposta" else "Salvar lançamentos") } },
         dismissButton = { TextButton(onClick = { if (editing) editing = false else editing = true }) { Text(if (editing) "Cancelar edição" else "Editar manualmente") } }
     )
-}
-
-@Composable private fun AssistantScreen(back: () -> Unit, message: (String) -> Unit, open: (String) -> Unit, startVoice: Boolean) = Page("Assistente Rural", "Conversa com contexto da propriedade", back) {
-    val context = LocalContext.current; val assistant = remember { RuralAssistant(context) }; val models = remember { AiModelRepository(context) }; val scope = rememberCoroutineScope()
-    val keyboard = LocalSoftwareKeyboardController.current
-    var installed by remember { mutableStateOf(models.isInstalled()) }; val progress by models.downloadProgress().collectAsState(initial = br.com.simplificarural.ai.ModelDownloadProgress(false, 0, 0, "AGUARDANDO"))
-    LaunchedEffect(progress.state, progress.downloadedBytes) { installed = models.isInstalled() }
-    var command by remember { mutableStateOf("") }; var reply by remember { mutableStateOf<String?>(null) }; var pending by remember { mutableStateOf(assistant.pendingDraft()) }; var showReview by remember { mutableStateOf(false) }
-    val prefs = remember { context.getSharedPreferences("secretary_voice", android.content.Context.MODE_PRIVATE) }; var speechOn by remember { mutableStateOf(prefs.getBoolean("enabled", false)) }; val speaker = remember { TextToSpeech(context) { } }; DisposableEffect(Unit) { onDispose { speaker.shutdown() } }
-    fun send() { if (command.isNotBlank()) { keyboard?.hide(); scope.launch { val result = assistant.handle(command, pending) as? AssistantResult.Reply; reply = result?.text ?: "Não consegui entender. Informe quantidade, produto e valor."; pending = result?.draft?.takeUnless { it.action == br.com.simplificarural.ai.RuralActionType.DESCONHECIDA }; showReview = pending?.requiresConfirmation == true; if (speechOn) speaker.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "secretary_reply"); command = "" } } }
-    Text("Como posso ajudar?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-    PressCard { Text(if (installed) "IA da família pronta" else if (progress.state == "INCOMPATIVEL") "IA local não compatível" else "Preparando a IA da família", fontWeight = FontWeight.Bold); Text(progress.message ?: "Um único Gemma 4 E2B é compartilhado com segurança pelos aplicativos Simplifica.", color = RuralSecondaryText); if (!installed && progress.state != "INCOMPATIVEL") { Button({ models.enqueueAutomaticDownload() }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Download, null); Spacer(Modifier.width(8.dp)); Text("Preparar IA") }; if (progress.downloading || progress.totalBytes > 0) { LinearProgressIndicator({ progress.percent / 100f }, Modifier.fillMaxWidth()); Text("Download: ${progress.percent}%", color = RuralSecondaryText) } }; if (progress.state == "INCOMPATIVEL") Text("As outras funções do Simplifica Rural continuam disponíveis.", color = RuralSecondaryText) }
-    PressCard { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Resposta falada", fontWeight = FontWeight.Medium); Text("Desligada por padrão", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) }; Switch(speechOn, { speechOn = it; prefs.edit().putBoolean("enabled", it).apply() }) } }
-    pending?.takeIf { !it.requiresConfirmation }?.let { PressCard { Text("Pendência em andamento", fontWeight = FontWeight.Bold); Text(it.summary, color = RuralSecondaryText) } }
-    OutlinedTextField(command, { command = it }, Modifier.fillMaxWidth(), label = { Text("Digite ou fale o que aconteceu...") }, shape = RoundedCornerShape(14.dp), singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send), keyboardActions = KeyboardActions(onSend = { send() })); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) { VoiceHoldButton(Modifier.size(52.dp), { command = if (command.isBlank()) it else "$command $it" }, message, startVoice); Button(::send, Modifier.weight(1f).height(52.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Send, null); Spacer(Modifier.width(8.dp)); Text("Enviar") } }; Text("Segure o microfone para falar.", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall)
-    reply?.let { answer -> PressCard { Text(answer, fontWeight = FontWeight.Medium); pending?.takeIf { it.requiresConfirmation }?.let { Button({ showReview = true }, Modifier.fillMaxWidth()) { Text("Revisar lançamento") } } } }
-    Text("Sugestões rápidas", fontWeight = FontWeight.Bold); QuickGrid(listOf("Registrar ovos" to RuralRoutes.BIRD_EGGS, "Registrar leite" to RuralRoutes.CATTLE_MILK, "Nova despesa" to RuralRoutes.EXPENSE, "Nova compra" to RuralRoutes.NEW_PURCHASE, "Consultar estoque" to RuralRoutes.STOCK, "Consultar financeiro" to RuralRoutes.FINANCE), open)
-    if (showReview) pending?.let { draft -> AlertDialog(onDismissRequest = { showReview = false }, title = { Text("Confira antes de salvar") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(draft.summary); draft.parameters.forEach { (label, value) -> if (value.isNotBlank()) SimpleText(label.replaceFirstChar { it.uppercase() }, value) }; Text("Nada será gravado até você confirmar.", color = RuralSecondaryText) } }, confirmButton = { Button({ reply = assistant.confirm(draft); pending = assistant.pendingDraft(); showReview = false; if (pending == null) open(draft.route()) }) { Text("Confirmar e abrir módulo") } }, dismissButton = { TextButton({ showReview = false }) { Text("Corrigir depois") } }) }
-}
-
-private fun br.com.simplificarural.ai.AiDraft.route(): String = when (action) {
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_OVOS -> RuralRoutes.STOCK
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_LEITE -> RuralRoutes.CATTLE_MILK
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_COMPRA_ESTOQUE -> RuralRoutes.NEW_PURCHASE
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_VENDA_ESTOQUE -> RuralRoutes.SALES
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_VACINA -> RuralRoutes.HEALTH
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_PARTO_BOVINO -> RuralRoutes.CATTLE_REPRODUCTION
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_AGENDA -> RuralRoutes.AGENDA
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_RACAO -> RuralRoutes.STOCK
-    br.com.simplificarural.ai.RuralActionType.REGISTRAR_DESPESA -> RuralRoutes.FINANCE
-    else -> RuralRoutes.ASSISTANT
-}
-
-@Composable private fun VoiceHoldButton(modifier: Modifier = Modifier, onRecognized: (String) -> Unit, onMessage: (String) -> Unit, startImmediately: Boolean = false) {
-    val context = LocalContext.current
-    var pendingStart by remember { mutableStateOf(false) }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) onMessage("Permita o uso do microfone para ditar o registro.")
-        pendingStart = granted
-    }
-    val recognizer = remember { if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null }
-    DisposableEffect(recognizer) { onDispose { recognizer?.destroy() } }
-    fun startListening() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { permission.launch(Manifest.permission.RECORD_AUDIO); return }
-        recognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onResults(results: android.os.Bundle) { results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let(onRecognized) }
-            override fun onError(error: Int) { if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) onMessage("Não consegui ouvir. Tente segurar e falar novamente.") }
-            override fun onReadyForSpeech(params: android.os.Bundle?) = Unit; override fun onBeginningOfSpeech() = Unit; override fun onRmsChanged(rmsdB: Float) = Unit; override fun onBufferReceived(buffer: ByteArray?) = Unit; override fun onEndOfSpeech() = Unit; override fun onPartialResults(partialResults: android.os.Bundle?) = Unit; override fun onEvent(eventType: Int, params: android.os.Bundle?) = Unit
-        })
-        recognizer?.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE, "pt-BR").putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
-    }
-    LaunchedEffect(pendingStart, startImmediately) { if (pendingStart || startImmediately) { pendingStart = false; startListening() } }
-    Surface(modifier.pointerInput(Unit) { detectTapGestures(onPress = { startListening(); tryAwaitRelease(); recognizer?.stopListening() }) }, color = RuralDarkGreen, contentColor = Color.White, shape = RoundedCornerShape(14.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Mic, "Mantenha pressionado para falar") } }
 }
