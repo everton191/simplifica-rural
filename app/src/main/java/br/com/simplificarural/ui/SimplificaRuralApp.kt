@@ -75,6 +75,7 @@ import br.com.simplificarural.ui.animals.*
 import br.com.simplificarural.ui.backup.*
 import br.com.simplificarural.ui.components.*
 import br.com.simplificarural.ui.health.*
+import br.com.simplificarural.ui.inventory.*
 import br.com.simplificarural.ui.navigation.*
 import br.com.simplificarural.ui.orders.*
 import br.com.simplificarural.ui.poultry.*
@@ -389,9 +390,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     records.forEach { record -> PressCard { Text(record.description, fontWeight = FontWeight.Bold); Text("${record.date} • ${record.quantity?.stripTrailingZeros()?.toPlainString().orEmpty()} ${record.unit.orEmpty()}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
     notes.forEach { note -> PressCard { Text(note.area, fontWeight = FontWeight.Bold); Text(note.description, color = RuralSecondaryText); Text("${note.createdAt.toLocalDate()} ${note.createdAt.toLocalTime().withSecond(0).withNano(0)}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
 }
-
-
-@Composable private fun PackagingScreen(back: () -> Unit, message: (String) -> Unit) = Page("Embalagens de ovos", "Defina quantos ovos entram em cada embalagem.", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { PackagingConversionService(context) }; var name by remember { mutableStateOf("Bandeja padrão") }; var eggs by remember { mutableStateOf(service.eggsPerPackage(scope, name).toString()) }; OutlinedTextField(name, { name = it; eggs = service.eggsPerPackage(scope, it).toString() }, Modifier.fillMaxWidth(), label = { Text("Embalagem") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(eggs, { eggs = it }, Modifier.fillMaxWidth(), label = { Text("Ovos por embalagem") }, shape = RoundedCornerShape(14.dp)); Button({ runCatching { service.setEggsPerPackage(scope, name, eggs.toInt()) }.onSuccess { message("Conversão salva para $name.") }.onFailure { message("Informe uma embalagem e quantidade válida.") } }, Modifier.fillMaxWidth().height(48.dp)) { Text("Salvar conversão") }; listOf("Meia dúzia" to 6, "Dúzia" to 12, "Bandeja pequena" to 20, "Bandeja padrão" to 30).forEach { (label, amount) -> PressCard({ name = label; eggs = service.eggsPerPackage(scope, label).toString() }) { Text(label, fontWeight = FontWeight.Bold); Text("${service.eggsPerPackage(scope, label)} ovos", color = RuralSecondaryText) } } }
 
 @Composable private fun AssistantScreen(back: () -> Unit, message: (String) -> Unit, open: (String) -> Unit, startVoice: Boolean) = Page("Assistente Rural", "Conversa com contexto da propriedade", back) {
     val context = LocalContext.current; val assistant = remember { RuralAssistant(context) }; val models = remember { AiModelRepository(context) }; val scope = rememberCoroutineScope()
