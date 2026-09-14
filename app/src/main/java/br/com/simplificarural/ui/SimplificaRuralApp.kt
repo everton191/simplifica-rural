@@ -71,12 +71,11 @@ import br.com.simplificarural.domain.orders.RuralOrderService
 import br.com.simplificarural.domain.nutrition.*
 import br.com.simplificarural.domain.property.FarmContextStore
 import br.com.simplificarural.ui.components.*
+import br.com.simplificarural.ui.navigation.*
 import br.com.simplificarural.ui.theme.*
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.LocalDate
-
-private data class NavItem(val route: String, val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
 
 @Composable
 fun SimplificaRuralApp() {
@@ -114,12 +113,6 @@ fun SimplificaRuralApp() {
                 }
             }
         }
-    }
-}
-
-@Composable private fun BottomNavigationBar(items: List<NavItem>, current: String, onSelect: (String) -> Unit) = NavigationBar(containerColor = Color.White) {
-    items.forEach { item ->
-        NavigationBarItem(selected = current == item.route, onClick = { onSelect(item.route) }, icon = { Icon(item.icon, item.label) }, label = { Text(item.label) }, colors = NavigationBarItemDefaults.colors(indicatorColor = RuralLightGreen))
     }
 }
 
