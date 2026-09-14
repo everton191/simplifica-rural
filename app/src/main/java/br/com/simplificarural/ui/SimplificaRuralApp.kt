@@ -77,6 +77,7 @@ import br.com.simplificarural.ui.components.*
 import br.com.simplificarural.ui.health.*
 import br.com.simplificarural.ui.navigation.*
 import br.com.simplificarural.ui.orders.*
+import br.com.simplificarural.ui.poultry.*
 import br.com.simplificarural.ui.settings.*
 import br.com.simplificarural.ui.theme.*
 import kotlinx.coroutines.launch
@@ -199,15 +200,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     NoticeCard({ open(RuralRoutes.AGENDA) })
 }
 
-
-@Composable private fun BirdsScreen(open: (String) -> Unit) = Page("Aves") {
-    val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val animalRecords = remember { AnimalRecordsService(context) }; val management = remember { FarmManagementService(context) }
-    val birds = remember { animalRecords.batches(scope, AnimalSpecies.AVE).sumOf { it.currentQuantity } }; val todayEggs = remember { management.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS && it.date == LocalDate.now() }.fold(BigDecimal.ZERO) { total, record -> total + (record.quantity ?: BigDecimal.ZERO) } }
-    MetricGrid(listOf("Total de aves" to birds.toString(), "Ovos hoje" to "${todayEggs.stripTrailingZeros().toPlainString()}", "Postura" to if (birds > 0) "${todayEggs.multiply(BigDecimal(100)).divide(BigDecimal(birds), 0, java.math.RoundingMode.HALF_UP)}%" else "—", "Ração hoje" to "A registrar"))
-    Text("Ações rápidas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    QuickGrid(listOf("Registrar ovos" to RuralRoutes.BIRD_EGGS, "Lotes" to RuralRoutes.BIRD_LOTS, "Alimentação" to RuralRoutes.feature("Alimentação aves"), "Saúde" to RuralRoutes.HEALTH, "Ocorrências" to RuralRoutes.feature("Ocorrências aves"), "Histórico" to RuralRoutes.HISTORY, "Relatórios" to RuralRoutes.feature("Relatórios aves")), open)
-}
-
 @Composable private fun CattleScreen(open: (String) -> Unit) = Page("Bovinos") {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val dashboard = remember { CattleManagementService(context).dashboard(scope) }; val milk = remember { FarmManagementService(context).records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE && it.date == LocalDate.now() }.fold(BigDecimal.ZERO) { total, record -> total + (record.quantity ?: BigDecimal.ZERO) } }
     MetricGrid(listOf("Total" to dashboard.totalCattle.toString(), "Em lactação" to dashboard.lactatingCattle.toString(), "Leite hoje" to "${milk.stripTrailingZeros().toPlainString()} L", "Média/vaca" to "${dashboard.averageMilkPerLactatingCow.stripTrailingZeros().toPlainString()} L"))
@@ -259,11 +251,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
 }
 @Composable private fun FinancialHistoryRow(entry: br.com.simplificarural.domain.financial.CashEntry) { var expanded by remember { mutableStateOf(false) }; PressCard { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(entry.description, fontWeight = FontWeight.Medium); Text(entry.date.toString(), style = MaterialTheme.typography.bodySmall, color = RuralSecondaryText) }; Text(money(entry.amount), color = if (entry.kind == br.com.simplificarural.domain.financial.CashEntryKind.ENTRADA) RuralSuccess else RuralDanger, fontWeight = FontWeight.Bold); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Recolher" else "Detalhes", tint = RuralSecondaryText) }; if (expanded) Text("${if (entry.kind == br.com.simplificarural.domain.financial.CashEntryKind.ENTRADA) "Entrada" else "Saída"} registrada no caixa em ${entry.date}.", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
 
-@Composable private fun EggRegistrationScreen(back: () -> Unit, message: (String) -> Unit) = Page("Registrar ovos", "Data e hora são incluídas automaticamente.", back) {
-    val context = LocalContext.current; var eggs by remember { mutableStateOf("") }
-    OutlinedTextField(eggs, { eggs = it }, Modifier.fillMaxWidth(), label = { Text("Ovos aproveitáveis") }, suffix = { Text("unidades") }, shape = RoundedCornerShape(14.dp))
-    Button({ runCatching { FarmManagementService(context).registerEggProduction(FarmContextStore(context).current(), eggs.toInt()) }.onSuccess { message("Produção salva com data e horário atuais."); back() }.onFailure { message("Informe uma quantidade válida.") } }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar produção") }
-}
 @Composable private fun MilkRegistrationScreen(back: () -> Unit, message: (String) -> Unit) = Page("Registrar leite", "Data e hora são registradas automaticamente.", back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val cattle = remember { CattleManagementService(context) }; val cows = remember { cattle.cows(scope) }; val now = java.time.LocalDateTime.now()
     var selectedCow by remember { mutableStateOf("") }; var liters by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }
