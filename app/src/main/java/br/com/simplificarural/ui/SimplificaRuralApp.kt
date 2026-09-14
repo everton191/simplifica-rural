@@ -73,6 +73,7 @@ import br.com.simplificarural.domain.property.FarmContextStore
 import br.com.simplificarural.ui.agenda.*
 import br.com.simplificarural.ui.animals.*
 import br.com.simplificarural.ui.cattle.*
+import br.com.simplificarural.ui.common.*
 import br.com.simplificarural.ui.backup.*
 import br.com.simplificarural.ui.components.*
 import br.com.simplificarural.ui.financial.*
@@ -200,20 +201,6 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     )
 }
 
-
-@Composable private fun HistoryScreen(back: () -> Unit) = Page("Histórico geral", "Lançamentos confirmados da fazenda selecionada.", back) {
-    val context = LocalContext.current
-    val scope = remember { FarmContextStore(context).current() }
-    val management = remember { FarmManagementService(context) }
-    val activities = remember { ActivityLogService(context) }
-    val records = remember { management.records(CashViewScope.SelectedUnit(scope)) }
-    val notes = remember { activities.listAll(scope) }
-    MetricGrid(listOf("Operações" to records.size.toString(), "Anotações" to notes.size.toString()))
-    if (records.isEmpty() && notes.isEmpty()) EmptyState("Nenhum histórico ainda", "Confirme um lançamento ou salve uma anotação para começar.")
-    records.forEach { record -> PressCard { Text(record.description, fontWeight = FontWeight.Bold); Text("${record.date} • ${record.quantity?.stripTrailingZeros()?.toPlainString().orEmpty()} ${record.unit.orEmpty()}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
-    notes.forEach { note -> PressCard { Text(note.area, fontWeight = FontWeight.Bold); Text(note.description, color = RuralSecondaryText); Text("${note.createdAt.toLocalDate()} ${note.createdAt.toLocalTime().withSecond(0).withNano(0)}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
-}
-
 @Composable private fun AssistantScreen(back: () -> Unit, message: (String) -> Unit, open: (String) -> Unit, startVoice: Boolean) = Page("Assistente Rural", "Conversa com contexto da propriedade", back) {
     val context = LocalContext.current; val assistant = remember { RuralAssistant(context) }; val models = remember { AiModelRepository(context) }; val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -266,10 +253,3 @@ private fun br.com.simplificarural.ai.AiDraft.route(): String = when (action) {
     LaunchedEffect(pendingStart, startImmediately) { if (pendingStart || startImmediately) { pendingStart = false; startListening() } }
     Surface(modifier.pointerInput(Unit) { detectTapGestures(onPress = { startListening(); tryAwaitRelease(); recognizer?.stopListening() }) }, color = RuralDarkGreen, contentColor = Color.White, shape = RoundedCornerShape(14.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Mic, "Mantenha pressionado para falar") } }
 }
-@Composable private fun FeatureScreen(feature: String, back: () -> Unit, message: (String) -> Unit) = Page(feature, "Registro operacional", back) { val context = LocalContext.current; val farm = remember { FarmContextStore(context).current() }; val store = remember { ActivityLogService(context) }; var target by remember { mutableStateOf("") }; var quantity by remember { mutableStateOf("") }; var note by remember { mutableStateOf("") }; var revision by remember { mutableIntStateOf(0) }; val entries = remember(revision) { store.list(farm, feature) }; val quantityNeeded = feature.contains("Alimentação", true) || feature.contains("Mortalidade", true) || feature.contains("Ocorrências", true) || feature.contains("Leitões", true); val description = when { feature.contains("Reprodução", true) || feature in listOf("Cio", "Cobertura", "Inseminação", "Prenhez") -> "Registre o evento reprodutivo para o animal ou lote."; feature.contains("Alimentação", true) -> "Registre alimento e quantidade fornecida ao animal ou lote."; feature.contains("Mortalidade", true) || feature.contains("Ocorrências", true) -> "Registre quantidade, causa e identificação do lote."; else -> "Registre a ocorrência para manter o histórico da propriedade." }; PressCard { Text(description, color = RuralSecondaryText) }; OutlinedTextField(target, { target = it }, Modifier.fillMaxWidth(), label = { Text("Animal ou lote") }, shape = RoundedCornerShape(14.dp)); if (quantityNeeded) OutlinedTextField(quantity, { quantity = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("Descrição / observação") }, minLines = 2, shape = RoundedCornerShape(14.dp)); Button({ runCatching { require(target.isNotBlank() && note.isNotBlank()); store.add(farm, feature, buildString { append("Alvo: $target"); if (quantity.isNotBlank()) append(" • Quantidade: $quantity"); append(" • $note") }); target = ""; quantity = ""; note = ""; revision++ }.onSuccess { message("Registro salvo no histórico de $feature.") }.onFailure { message("Informe animal/lote e descrição do registro.") } }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("Salvar registro") }; Text("Histórico", fontWeight = FontWeight.Bold); if (entries.isEmpty()) EmptyState("Nenhum registro de $feature", "Adicione o primeiro registro para começar.") else entries.forEach { entry -> PressCard { Text(entry.description, fontWeight = FontWeight.Medium); Text(entry.createdAt.toLocalDate().toString() + " • " + entry.createdAt.toLocalTime().withSecond(0).withNano(0), color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } } }
-@Composable private fun PlaceholderScreen(title: String, back: () -> Unit) = Page(title, "Esta tela será conectada ao módulo correspondente.", back) { EmptyState("Nenhum registro disponível", "Cadastre o primeiro registro para começar.") }
-
-
-
-
-
