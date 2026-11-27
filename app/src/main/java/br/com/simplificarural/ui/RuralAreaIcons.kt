@@ -30,7 +30,7 @@ internal fun ruralRouteIcon(route: String?): Int? = when (route?.substringBefore
     RuralRoutes.DAY_SUMMARY -> R.drawable.ic_rural_daily
     RuralRoutes.BACKUP -> R.drawable.ic_rural_backup
     RuralRoutes.ABOUT -> R.drawable.ic_rural_about
-    RuralRoutes.ASSISTANT, RuralRoutes.OPERATIONAL_TEST -> R.drawable.ic_rural_assistant
+    RuralRoutes.ASSISTANT, RuralRoutes.OPERATIONAL_TEST, RuralRoutes.LFM3_SETUP -> R.drawable.ic_rural_assistant
     RuralRoutes.ORDERS -> R.drawable.ic_rural_orders
     RuralRoutes.STOCK_ADD -> when (route?.substringAfter('/', "")?.lowercase()) {
         "alimentação" -> R.drawable.ic_rural_feed

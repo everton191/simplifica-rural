@@ -131,7 +131,7 @@ fun SimplificaRuralApp() {
             }
         }
     }
-    RuralWelcome()
+    RuralWelcome { open(RuralRoutes.LFM3_SETUP) }
     if (showQuickActions) {
         QuickActionsDialog(close = { showQuickActions = false }, onOpen = { destination ->
             showQuickActions = false
@@ -191,6 +191,7 @@ private fun RuralScreen(route: String, open: (String) -> Unit, back: () -> Unit,
     RuralRoutes.PRODUCTION -> ProductionScreen(back)
     RuralRoutes.MORE -> MoreScreen(open)
     RuralRoutes.SETTINGS -> SettingsScreen(open, back)
+    RuralRoutes.LFM3_SETUP -> Page("Modelo de IA para teste", onBack = back) { Lfm3Setup() }
     RuralRoutes.ACTIVITIES -> ActivitiesScreen(back, message)
     RuralRoutes.HISTORY -> HistoryScreen(back)
     RuralRoutes.DAY_SUMMARY -> Page("Resumo do dia", onBack = back) { DailySummary() }
@@ -252,6 +253,7 @@ private fun RuralScreen(route: String, open: (String) -> Unit, back: () -> Unit,
         "$weights $weighingLabel • $births $birthLabel"
     }
     HomeRecordingActions(open)
+    Lfm3Setup(onOpen = { open(RuralRoutes.LFM3_SETUP) })
     OutlinedButton({ open(RuralRoutes.DAY_SUMMARY) }, Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         Icon(painterResource(R.drawable.ic_rural_daily), contentDescription = null)
         Spacer(Modifier.width(8.dp))
@@ -618,6 +620,7 @@ private fun String.decimal(): BigDecimal = replace(',', '.').toBigDecimal()
     MoreGroup("Sistema", listOf(
         "Embalagens de ovos" to RuralRoutes.PACKAGING,
         "Configurações" to RuralRoutes.SETTINGS,
+        "Modelo de IA para teste" to RuralRoutes.LFM3_SETUP,
         "Backup" to RuralRoutes.BACKUP,
         "Sobre" to RuralRoutes.ABOUT
     ), open)

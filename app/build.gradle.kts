@@ -9,11 +9,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "br.com.simplificarural"
+        applicationId = "br.com.simplificarural.lfm3qa"
         minSdk = 26
         targetSdk = 35
         versionCode = 4
-        versionName = "0.1.3"
+        versionName = "0.1.3-lfm3"
     }
 
     buildFeatures { compose = true; buildConfig = true }
@@ -22,7 +22,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/*.so"
+        }
+    }
 }
 
 dependencies {

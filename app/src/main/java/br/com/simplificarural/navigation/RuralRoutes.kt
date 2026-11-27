@@ -36,6 +36,7 @@ object RuralRoutes {
     const val STOCK_ADD = "stock_add"
     const val MORE = "more"
     const val SETTINGS = "settings"
+    const val LFM3_SETUP = "lfm3_setup"
     const val ACTIVITIES = "activities"
     const val HISTORY = "history"
     const val DAY_SUMMARY = "day_summary"

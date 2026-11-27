@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -50,9 +51,11 @@ import br.com.simplificarural.domain.management.StockDirection
 import br.com.simplificarural.domain.property.FarmContextStore
 import br.com.simplificarural.navigation.RuralRoutes
 import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import java.time.format.DateTimeFormatter
 
 @Composable
 internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onSaved: (String) -> Unit) {
@@ -64,41 +67,74 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
     var error by remember { mutableStateOf<String?>(null) }
     var review by remember { mutableStateOf<QuickActionReview?>(null) }
     var saleNeedingAmount by remember { mutableStateOf<SaleAmountRequest?>(null) }
+    var remaining by remember { mutableStateOf<List<QuickActionReview>>(emptyList()) }
+    var savedCount by remember { mutableStateOf(0) }
+    var batchSize by remember { mutableStateOf(0) }
+    var fromVoiceReview by remember { mutableStateOf(false) }
+    var lastSavedRoute by remember { mutableStateOf<String?>(null) }
+    var analyzing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val lfm3 = remember(context) { Lfm3QaClient(context) }
     fun readReview(description: String) {
         audio.speak("Confira antes de salvar. $description. Se estiver certo, toque no botão verde, Confirmar e salvar.")
+    }
+    fun closeReview() {
+        val saved = lastSavedRoute
+        if (saved == null) close() else onSaved(saved)
     }
     fun requestSaleAmount(sale: SaleAmountRequest, fromVoice: Boolean) {
         review = null
         error = null
+        remaining = emptyList()
+        batchSize = 1
         saleNeedingAmount = sale
         if (fromVoice) audio.speak("${sale.description}. Quanto você recebeu no total? Toque no microfone para falar o valor.")
     }
     fun prepare(command: String, fromVoice: Boolean = false) {
+        if (analyzing) return
         keyboard?.hide()
-        val parsed = parseQuickCommand(command)
-        runCatching {
-            quickModuleAction(context, command)?.let {
+        error = null
+        analyzing = true
+        scope.launch {
+            try {
+                require(command.isNotBlank() && command.length <= 200)
+                quickModuleAction(context, command)?.let {
                     moduleResult = it
                     error = null
                     if (fromVoice) audio.speak(it.text)
-                    return
+                    return@launch
                 }
-                parsed?.requestMissingSaleAmount(context)?.let {
-                requestSaleAmount(it, fromVoice)
-                return
-            }
-            prepareQuickAction(context, command, parsed)
-        }
-            .onSuccess {
-                review = it
-                error = null
-                if (fromVoice) readReview(it.description)
-            }
-            .onFailure {
-                val detail = it.message ?: "Confira o comando e tente novamente."
+                val direct = parseQuickCommand(command)
+                direct?.requestMissingSaleAmount(context)?.let {
+                    fromVoiceReview = fromVoice
+                    requestSaleAmount(it, fromVoice)
+                    return@launch
+                }
+                val parts = command.split(Regex("""(?:;|,|\be\b)\s*(?=(?:comprei|vendi|gastei|paguei)\b)""", RegexOption.IGNORE_CASE))
+                val financialBatch = if (parts.size in 2..4) parts.mapNotNull { parseQuickCommand(it.trim()) }
+                    .takeIf { it.size == parts.size && it.none { item -> item is QuickCommand.LooseEggSale && item.total == null || item is QuickCommand.MilkSale && item.total == null } }
+                    else null
+                require(direct != null || financialBatch != null || !expressesFinance(command)) {
+                    "Informe o produto, a quantidade e o valor. Para gastos, diga o valor e com o que gastou."
+                }
+                val proposals = financialBatch ?: if (direct != null) listOf(direct) else lfm3.propose(command)
+                val prepared = proposals.map { prepareQuickAction(context, if (direct == null) "" else command, it) }
+                savedCount = 0
+                batchSize = prepared.size
+                fromVoiceReview = fromVoice
+                review = prepared.first()
+                remaining = prepared.drop(1)
+                if (fromVoice) readReview(prepared.first().description)
+            } catch (errorCause: CancellationException) {
+                throw errorCause
+            } catch (errorCause: Exception) {
+                val detail = errorCause.message ?: "Confira o comando e tente novamente."
                 error = detail
                 if (fromVoice) audio.speak(detail)
+            } finally {
+                analyzing = false
             }
+        }
     }
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -130,16 +166,17 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
     }
     val selected = review
     AlertDialog(
-        onDismissRequest = close,
+        onDismissRequest = ::closeReview,
         title = { Text(if (selected == null) "Novo lançamento" else "Confira antes de salvar") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (selected == null) {
-                    Text("Escreva ou fale o que aconteceu.")
+                    Text(if (analyzing) "Preparando seu lançamento…" else "Escreva ou fale o que aconteceu.")
                     OutlinedTextField(
                         value = input,
                         onValueChange = { input = it.take(200); error = null },
                         modifier = Modifier.fillMaxWidth(),
+                        enabled = !analyzing,
                         label = { Text("O que aconteceu?") },
                         placeholder = { Text("300 ovos") },
                         minLines = 2,
@@ -147,7 +184,7 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = { if (input.isNotBlank()) prepare(input) })
                     )
-                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                    OutlinedButton(enabled = !analyzing, modifier = Modifier.fillMaxWidth(), onClick = {
                         keyboard?.hide()
                         runCatching {
                             speech.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -162,9 +199,10 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
                     }
                     Text("Exemplos: “300 ovos” ou “Vendi 50 bandejas a 12 reais”.")
                 } else {
+                    if (batchSize > 1) Text("Lançamento ${savedCount + 1} de $batchSize. Confirme um por vez.")
                     Text(selected.description)
                     selected.collectedEggs?.let { count ->
-                        OutlinedButton({ requestSaleAmount(requireNotNull(QuickCommand.LooseEggSale(count).requestMissingSaleAmount(context)), false) }) {
+                        if (batchSize <= 1) OutlinedButton({ requestSaleAmount(requireNotNull(QuickCommand.LooseEggSale(count).requestMissingSaleAmount(context)), false) }) {
                             Icon(painterResource(R.drawable.ic_rural_sale), contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                             Text("Foi uma venda")
@@ -183,14 +221,28 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
         },
         confirmButton = {
             if (selected == null) {
-                Button(onClick = { prepare(input) }, enabled = input.isNotBlank()) { Text("Revisar") }
+                Button(onClick = { prepare(input) }, enabled = input.isNotBlank() && !analyzing) { Text("Revisar") }
             } else {
                 Button(onClick = {
                     if (review !== selected) return@Button
                     review = null
                     runCatching { selected.save() }
-                        .onSuccess { onSaved(selected.route) }
-                        .onFailure { error = it.message ?: "Confira o histórico antes de tentar novamente." }
+                        .onSuccess {
+                            savedCount++
+                            lastSavedRoute = selected.route
+                            val next = remaining.firstOrNull()
+                            if (next == null) onSaved(selected.route) else {
+                                review = next
+                                remaining = remaining.drop(1)
+                                if (fromVoiceReview) readReview(next.description)
+                            }
+                        }
+                        .onFailure {
+                            val detail = it.message ?: "Confira o histórico antes de tentar novamente."
+                            if (savedCount > 0) input = ""
+                            remaining = emptyList()
+                            error = if (savedCount > 0) "Os lançamentos anteriores foram salvos. $detail" else detail
+                        }
                 }) {
                     Icon(Icons.Default.Check, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
@@ -200,8 +252,8 @@ internal fun QuickActionsDialog(close: () -> Unit, onOpen: (String) -> Unit, onS
         },
         dismissButton = {
             TextButton(onClick = {
-                if (selected == null) close() else { review = null; error = null }
-            }) { Text(if (selected == null) "Cancelar" else "Corrigir") }
+                if (selected == null || savedCount > 0) closeReview() else { review = null; error = null }
+            }) { Text(if (selected == null) "Cancelar" else if (savedCount > 0) "Pular restantes" else "Corrigir") }
         }
     )
 }
@@ -210,12 +262,7 @@ private class QuickActionReview(
     val description: String, val route: String, val farmName: String, val collectedEggs: Int?, val save: () -> Unit
 )
 
-private fun prepareQuickAction(context: Context, input: String, parsed: QuickCommand?): QuickActionReview {
-    val command = requireNotNull(parsed) {
-        if (expressesFinance(input)) {
-            "Informe o produto, a quantidade e o valor. Para gastos, diga o valor e com o que gastou."
-        } else "Não identifiquei uma ação completa. Informe a ação, a quantidade e a unidade."
-    }
+private fun prepareQuickAction(context: Context, input: String, command: QuickCommand): QuickActionReview {
     val farm = FarmContextStore(context)
     val scope = farm.current()
     val management = FarmManagementService(context)
@@ -238,13 +285,14 @@ private fun prepareQuickAction(context: Context, input: String, parsed: QuickCom
         }
         is QuickCommand.Stock -> {
             val selectedScope = CashViewScope.SelectedUnit(scope)
+            val normalizedProduct = RuralLanguageNormalizer.normalize(command.product)
             fun matches() = management.stock(selectedScope).filter { item ->
                 val name = RuralLanguageNormalizer.normalize(item.productName)
                 item.unit.equals(command.unit, ignoreCase = true) &&
-                    (name == command.product || command.product == "racao" && name.startsWith("racao "))
+                    (name == normalizedProduct || normalizedProduct == "racao" && name.startsWith("racao "))
             }
             val matches = matches()
-            val exact = matches.filter { RuralLanguageNormalizer.normalize(it.productName) == command.product }
+            val exact = matches.filter { RuralLanguageNormalizer.normalize(it.productName) == normalizedProduct }
             val candidates = exact.ifEmpty { matches }
             require(candidates.size <= 1) { "Há mais de um tipo de ração. Informe o nome completo do item." }
             val item = candidates.singleOrNull()
@@ -252,7 +300,7 @@ private fun prepareQuickAction(context: Context, input: String, parsed: QuickCom
             val productStart = Regex("""\s(?:kg|quilos?|l|litros?|unidades?)\s+de\s+""", RegexOption.IGNORE_CASE)
                 .find(input)?.range?.last?.plus(1)
             val originalProduct = productStart?.let { input.substring(it).trim().trimEnd('.', '!') } ?: command.product
-            val product = item?.productName ?: if (command.product == "racao") "Ração" else originalProduct.replaceFirstChar { it.uppercase() }
+            val product = item?.productName ?: if (normalizedProduct == "racao") "Ração" else originalProduct.replaceFirstChar { it.uppercase() }
             val unit = item?.unit ?: command.unit
             val direction = if (command.incoming) StockDirection.ENTRADA else StockDirection.SAIDA
             val label = if (command.incoming) "Entrada" else "Saída"
@@ -263,7 +311,7 @@ private fun prepareQuickAction(context: Context, input: String, parsed: QuickCom
                 management.adjustInventory(
                     scope, product, command.quantity, unit, direction,
                     description = "$label de estoque: $product",
-                    inventoryCategory = current?.inventoryCategory ?: if (command.product.startsWith("racao")) "Alimentação" else "Outros"
+                    inventoryCategory = current?.inventoryCategory ?: if (normalizedProduct.startsWith("racao")) "Alimentação" else "Outros"
                 )
             }
         }
