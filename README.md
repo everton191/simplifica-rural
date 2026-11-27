@@ -2,19 +2,13 @@
 
 Aplicativo Android offline-first para pequenas propriedades com aves, bovinos e caixa.
 
-Versão atual: **0.1.2** (`versionCode 3`).
+[Baixar Simplifica Rural 0.1.3 com LFM 3](https://github.com/everton191/simplifica-rural/releases/latest)
 
-## IA local compartilhada
+## LFM 3 no Android
 
-Ao abrir o aplicativo, o Simplifica Rural consulta o provedor da família Simplifica e solicita automaticamente o Gemma 4 E2B. O modelo é baixado uma única vez, validado e compartilhado com Simplifica Tec e Simplifica 3D.
+Após cadastrar a propriedade, escolha **Instalar LFM 3**. O modelo tem cerca de 1,1 GB. Acompanhe o progresso na tela Início e na notificação do Android, se autorizada. Os lançamentos simples continuam disponíveis durante o download.
 
-O download só é liberado em aparelho ARM64 com memória próxima de 6 GB ou mais e pelo menos 3,1 GB livres. Se o aparelho não atender aos requisitos, o Rural mostra o motivo e mantém as demais funções disponíveis sem tentar baixar o modelo.
-
-O modelo interpreta mensagens em ações estruturadas. O aplicativo valida, mostra uma prévia e só executa alterações quando o usuário confirma.
-
-Perguntas comuns são respondidas como uma conversa normal. As 12 mensagens mais recentes são enviadas ao modelo e até 12 pares de conversa ficam guardados por propriedade para preservar o contexto após reabrir o aplicativo.
-
-Consulte [Validação 0.1.2](docs/VALIDACAO-0.1.2.md) para os testes executados e os cenários que dependem do ambiente.
+O APK com LFM 3 usa um pacote Android próprio. Os dados de instalações anteriores ficam no aplicativo anterior. O código da versão com LFM 3 está na branch [teste/lfm3](https://github.com/everton191/simplifica-rural/tree/teste/lfm3).
 
 ## Abrir
 
