@@ -24,16 +24,19 @@ class LocalBackupStore(private val context: Context) {
             .orEmpty()
     }
 
-    fun create(): LocalBackup {
+    fun create(): LocalBackup = synchronized(backupLock) {
         val createdAt = Instant.now()
         val directory = File(context.filesDir, BACKUP_DIRECTORY).apply { mkdirs() }
-        val target = File(directory, "simplifica-rural-${FILE_TIME.format(createdAt)}.json")
+        val base = "simplifica-rural-${FILE_TIME.format(createdAt)}"
+        val target = generateSequence(0) { it + 1 }
+            .map { suffix -> File(directory, if (suffix == 0) "$base.json" else "$base-$suffix.json") }
+            .first { !it.exists() }
         val temporary = File(directory, "${target.name}.part")
 
         temporary.writeText(buildPayload(createdAt).toString(2), StandardCharsets.UTF_8)
         check(temporary.renameTo(target)) { "Não foi possível finalizar o backup local." }
         retainRecentBackups(directory)
-        return LocalBackup(target, createdAt)
+        LocalBackup(target, createdAt)
     }
 
     private fun buildPayload(createdAt: Instant): JSONObject {
@@ -79,6 +82,7 @@ class LocalBackupStore(private val context: Context) {
     }
 
     private companion object {
+        val backupLock = Any()
         const val BACKUP_DIRECTORY = "backups"
         const val EVENTS_PREFERENCES = "rural_events"
         const val EVENTS_KEY = "events"

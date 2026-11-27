@@ -8,11 +8,17 @@ import java.math.BigDecimal
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.temporal.TemporalAdjusters
 import java.util.UUID
 
 enum class MilkShift { MANHA, TARDE, NOITE, NAO_INFORMADO;
     companion object { fun automatic(hour: Int): MilkShift = when { hour < 12 -> MANHA; hour < 17 -> TARDE; else -> NOITE } }
 }
+internal fun milkCycle(reference: LocalDate, closingDay: DayOfWeek): ClosedRange<LocalDate> {
+    val end = reference.with(TemporalAdjusters.nextOrSame(closingDay))
+    return end.minusDays(6)..end
+}
+
 data class MilkShiftRecord(val id: String, val scope: FarmScope, val liters: BigDecimal, val shift: MilkShift, val recordedAt: LocalDateTime)
 
 /** Keeps the diary-level detail that a production total alone cannot preserve. */
@@ -31,8 +37,9 @@ class MilkSecretaryService(context: Context) {
         return when { now.hour >= 12 && MilkShift.MANHA !in shifts -> MilkShift.MANHA; now.hour >= 18 && MilkShift.TARDE !in shifts -> MilkShift.TARDE; else -> null }
     }
     fun weeklyTotal(scope: FarmScope, closingDay: DayOfWeek = DayOfWeek.THURSDAY, today: LocalDate = LocalDate.now()): BigDecimal {
-        val start = today.minusDays(((today.dayOfWeek.value - closingDay.value + 7) % 7).toLong())
-        return all(scope).filter { !it.recordedAt.toLocalDate().isBefore(start) && !it.recordedAt.toLocalDate().isAfter(today) }.fold(BigDecimal.ZERO) { total, item -> total + item.liters }
+        val period = milkCycle(today, closingDay)
+        return all(scope).filter { it.recordedAt.toLocalDate() in period && !it.recordedAt.toLocalDate().isAfter(today) }
+            .fold(BigDecimal.ZERO) { total, item -> total + item.liters }
     }
     private fun all(scope: FarmScope): List<MilkShiftRecord> = JSONArray(prefs.getString("records", "[]")).let { a -> (0 until a.length()).map(a::getJSONObject).map(::fromJson).filter { it.scope == scope } }
     private fun MilkShiftRecord.json() = JSONObject().apply { put("id", id); put("organizationId", scope.organizationId); put("farmId", scope.farmId); put("unitId", scope.unitId); put("liters", liters.toPlainString()); put("shift", shift.name); put("recordedAt", recordedAt.toString()) }

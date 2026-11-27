@@ -20,7 +20,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -45,6 +44,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -59,11 +60,17 @@ import br.com.simplificarural.data.local.CattleManagementService
 import br.com.simplificarural.data.local.AnimalRecordsService
 import br.com.simplificarural.data.local.ActivityLogService
 import br.com.simplificarural.data.local.MilkSecretaryService
+import br.com.simplificarural.data.local.milkCycle
 import br.com.simplificarural.data.local.MilkShift
 import br.com.simplificarural.domain.agenda.AgendaType
 import br.com.simplificarural.domain.animals.AnimalSpecies
+import br.com.simplificarural.domain.financial.CashAggregator
+import br.com.simplificarural.domain.financial.CashEntry
+import br.com.simplificarural.domain.financial.CashEntryKind
 import br.com.simplificarural.domain.financial.CashViewScope
 import br.com.simplificarural.domain.management.FarmManagementService
+import br.com.simplificarural.domain.management.ManagementRecord
+import br.com.simplificarural.domain.management.ManagementRecordType
 import br.com.simplificarural.domain.management.operationFlows
 import br.com.simplificarural.domain.inventory.StockAlertService
 import br.com.simplificarural.domain.inventory.PackagingConversionService
@@ -81,7 +88,8 @@ private data class NavItem(val route: String, val label: String, val icon: andro
 fun SimplificaRuralApp() {
     val stack = remember { mutableStateListOf(RuralRoutes.HOME) }
     val route = stack.last()
-    var assistantVoiceMode by remember { mutableStateOf(false) }
+    var showQuickActions by remember { mutableStateOf(false) }
+    var routeRevision by remember { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     fun open(destination: String) { if (destination != route) stack.add(destination) }
@@ -99,37 +107,61 @@ fun SimplificaRuralApp() {
         NavItem(RuralRoutes.STOCK, "Estoque", Icons.Default.Inventory2), NavItem(RuralRoutes.FINANCE, "Caixa", Icons.Default.AccountBalanceWallet),
         NavItem(RuralRoutes.MORE, "Mais", Icons.Default.Menu)
     )
-    val isRoot = route in bottom.map { it.route }
     Scaffold(
         containerColor = RuralBackground,
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = { BottomNavigationBar(bottom, route, ::root) },
-        floatingActionButton = { if (route !in setOf(RuralRoutes.ASSISTANT, RuralRoutes.HOME)) Surface(Modifier.size(56.dp).combinedClickable(onClick = { assistantVoiceMode = false; open(RuralRoutes.ASSISTANT) }, onLongClick = { assistantVoiceMode = true; open(RuralRoutes.ASSISTANT) }), shape = RoundedCornerShape(50), color = RuralDarkGreen, contentColor = Color.White, shadowElevation = 6.dp) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.AutoAwesome, "Abrir secretária; segure para falar") } } }
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showQuickActions = true },
+                icon = { Icon(painterResource(R.drawable.ic_rural_add), contentDescription = null) },
+                text = { Text("Lançar") },
+                containerColor = RuralDarkGreen,
+                contentColor = Color.White
+            )
+        }
     ) { padding ->
         AnimatedContent(route, transitionSpec = { (fadeIn(tween(210)) togetherWith fadeOut(tween(180))) }, label = "screen") { current ->
             Box(Modifier.padding(padding)) {
-                RuralScreen(current, isRoot, ::open, ::back, assistantVoiceMode) { message ->
-                    coroutineScope.launch { snackbar.showSnackbar(message) }
+                key(routeRevision) {
+                    RuralScreen(current, ::open, ::back) { message ->
+                        coroutineScope.launch { snackbar.showSnackbar(message) }
+                    }
                 }
             }
         }
+    }
+    RuralWelcome()
+    if (showQuickActions) {
+        QuickActionsDialog(close = { showQuickActions = false }, onOpen = { destination ->
+            showQuickActions = false
+            open(destination)
+        }, onSaved = { destination ->
+            showQuickActions = false
+            if (destination == route) routeRevision++ else open(destination)
+            coroutineScope.launch { snackbar.showSnackbar("Lançamento confirmado e salvo.") }
+        })
     }
 }
 
 @Composable private fun BottomNavigationBar(items: List<NavItem>, current: String, onSelect: (String) -> Unit) = NavigationBar(containerColor = Color.White) {
     items.forEach { item ->
-        NavigationBarItem(selected = current == item.route, onClick = { onSelect(item.route) }, icon = { Icon(item.icon, item.label) }, label = { Text(item.label) }, colors = NavigationBarItemDefaults.colors(indicatorColor = RuralLightGreen))
+        NavigationBarItem(selected = current == item.route, onClick = { onSelect(item.route) }, icon = {
+            val icon = ruralRouteIcon(item.route)
+            if (icon == null) Icon(item.icon, contentDescription = null)
+            else Icon(painterResource(icon), contentDescription = null)
+        }, label = { Text(item.label) }, colors = NavigationBarItemDefaults.colors(indicatorColor = RuralLightGreen))
     }
 }
 
 @Composable
-private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, back: () -> Unit, assistantVoiceMode: Boolean, message: (String) -> Unit) = when (route) {
+private fun RuralScreen(route: String, open: (String) -> Unit, back: () -> Unit, message: (String) -> Unit) = when (route) {
     RuralRoutes.HOME -> HomeScreen(open)
     RuralRoutes.ANIMALS -> AnimalsScreen(open)
-    RuralRoutes.BIRDS -> BirdsScreen(open)
+    RuralRoutes.BIRDS -> BirdsScreen(open, back)
     RuralRoutes.BIRD_EGGS -> EggRegistrationScreen(back, message)
     RuralRoutes.BIRD_LOTS -> LotsScreen("Lotes de aves", back, message)
-    RuralRoutes.CATTLE -> CattleScreen(open)
+    RuralRoutes.CATTLE -> CattleScreen(open, back)
     RuralRoutes.CATTLE_LIST -> CattleListScreen(open, back)
     RuralRoutes.CATTLE_DETAIL -> CattleListScreen(open, back)
     RuralRoutes.CATTLE_MILK -> MilkRegistrationScreen(back, message)
@@ -137,10 +169,10 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     RuralRoutes.CATTLE_FEED -> CattleFeedScreen(back, message)
     RuralRoutes.CATTLE_REPRODUCTION -> CattleReproductionScreen(back, message)
     RuralRoutes.CATTLE_NEW -> NewCattleScreen(back, message)
-    RuralRoutes.SWINE -> SwineScreen(open)
-    RuralRoutes.SWINE_FATTENING -> FatteningScreen(open)
+    RuralRoutes.SWINE -> SwineScreen(open, back)
+    RuralRoutes.SWINE_FATTENING -> FatteningScreen(open, back)
     RuralRoutes.SWINE_LOTS -> LotsScreen("Lotes de engorda", back, message)
-    RuralRoutes.SWINE_BREEDING -> BreedingScreen(open)
+    RuralRoutes.SWINE_BREEDING -> BreedingScreen(open, back)
     RuralRoutes.SOW_DETAIL -> SowDetailScreen(back)
     RuralRoutes.SWINE_WEIGHT -> SwineWeightScreen(back, message)
     RuralRoutes.SWINE_FARROWING -> SwineFarrowingScreen(back, message)
@@ -150,21 +182,20 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     RuralRoutes.FINANCE -> FinanceScreen(open)
     RuralRoutes.ENTRY -> FinancialFormScreen("Nova entrada", "Salvar entrada", back, message)
     RuralRoutes.EXPENSE -> FinancialFormScreen("Nova despesa", "Salvar despesa", back, message)
-    RuralRoutes.PURCHASES -> PurchasesScreen(open, message)
+    RuralRoutes.PURCHASES -> PurchasesScreen(open, back, message)
     RuralRoutes.NEW_PURCHASE -> PurchaseFormScreen(back, message)
-    RuralRoutes.SALES -> SalesScreen(open, message)
+    RuralRoutes.SALES -> SalesScreen(open, back, message)
     RuralRoutes.NEW_SALE -> SaleFormScreen(back, message)
     RuralRoutes.AGENDA -> AgendaScreen(back)
     RuralRoutes.HEALTH -> HealthScreen(back, message)
     RuralRoutes.PRODUCTION -> ProductionScreen(back)
     RuralRoutes.MORE -> MoreScreen(open)
-    RuralRoutes.SETTINGS -> SettingsScreen(open)
+    RuralRoutes.SETTINGS -> SettingsScreen(open, back)
     RuralRoutes.ACTIVITIES -> ActivitiesScreen(back, message)
     RuralRoutes.HISTORY -> HistoryScreen(back)
+    RuralRoutes.DAY_SUMMARY -> Page("Resumo do dia", onBack = back) { DailySummary() }
     RuralRoutes.BACKUP -> BackupScreen(back, message)
     RuralRoutes.ABOUT -> AboutScreen(back)
-    RuralRoutes.ASSISTANT -> AssistantScreen(back, message, open, assistantVoiceMode)
-    RuralRoutes.OPERATIONAL_TEST -> OperationalTestScreen(back)
     RuralRoutes.PACKAGING -> PackagingScreen(back, message)
     RuralRoutes.ORDERS -> OrdersScreen(back, message)
     else -> when { route.startsWith("${RuralRoutes.STOCK_DETAIL}/") -> StockDetailScreen(route.removePrefix("${RuralRoutes.STOCK_DETAIL}/"), back, open); route.startsWith("${RuralRoutes.STOCK_ADD}/") -> StockAddScreen(back, message, route.removePrefix("${RuralRoutes.STOCK_ADD}/")); route.startsWith("${RuralRoutes.CATTLE_DETAIL}/") -> CattleProfileDetailScreen(route.removePrefix("${RuralRoutes.CATTLE_DETAIL}/"), back); route.startsWith(RuralRoutes.FEATURE_PREFIX) && route.removePrefix(RuralRoutes.FEATURE_PREFIX).contains("Relatórios", true) -> AreaReportScreen(route.removePrefix(RuralRoutes.FEATURE_PREFIX), back); route.startsWith(RuralRoutes.FEATURE_PREFIX) -> FeatureScreen(route.removePrefix(RuralRoutes.FEATURE_PREFIX), back, message); else -> PlaceholderScreen("Tela não encontrada", back) }
@@ -183,32 +214,126 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
         item { Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content) }
     }
 }
-@Composable private fun GuideTip(title: String) { val text = when (title) { "Simplifica Rural" -> "Aqui você acompanha produção, saldo e atalhos. Toque nos cards para abrir cada área."; "Animais" -> "Cadastre animais e lotes aqui. Toque em uma criação para ver seus registros."; "Estoque" -> "Registre compras por categoria e consulte cada item para ver entradas e saídas."; "Financeiro" -> "Aqui você adiciona entradas, despesas, compras e vendas. Use Caixa geral para juntar as unidades."; "Agenda" -> "Crie lembretes para vacina, manutenção, pagamentos e tarefas da propriedade."; "Produção" -> "Os gráficos mostram somente lançamentos confirmados de ovos, leite e pesagens."; else -> null }; if (text != null) { val context = LocalContext.current; val prefs = remember { context.getSharedPreferences("guide_tips", android.content.Context.MODE_PRIVATE) }; val key = "opens_${title}"; val count = remember(title) { prefs.getInt(key, 0) }; LaunchedEffect(title) { prefs.edit().putInt(key, count + 1).apply() }; if (count < 10) PressCard { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lightbulb, null, tint = RuralGreen); Spacer(Modifier.width(10.dp)); Text(text, Modifier.weight(1f), color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } } } }
+@Composable private fun GuideTip(title: String) { val text = when (title) { "Animais" -> "Cadastre animais e lotes aqui. Toque em uma criação para ver seus registros."; "Estoque" -> "Registre compras por categoria e consulte cada item para ver entradas e saídas."; "Financeiro" -> "Aqui você adiciona entradas, despesas, compras e vendas. Use Caixa geral para juntar as unidades."; "Agenda" -> "Crie lembretes para vacina, manutenção, pagamentos e tarefas da propriedade."; "Produção" -> "Os gráficos mostram somente lançamentos confirmados de ovos, leite e pesagens."; else -> null }; if (text != null) { val context = LocalContext.current; val prefs = remember { context.getSharedPreferences("guide_tips", android.content.Context.MODE_PRIVATE) }; val key = "opens_${title}"; val count = remember(title) { prefs.getInt(key, 0) }; LaunchedEffect(title) { prefs.edit().putInt(key, count + 1).apply() }; if (count < 10) PressCard { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Lightbulb, null, tint = RuralGreen); Spacer(Modifier.width(10.dp)); Text(text, Modifier.weight(1f), color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } } } }
 
-@Composable private fun HomeScreen(open: (String) -> Unit) = Page("Simplifica Rural", FarmContextStore(LocalContext.current).farmName(), actions = { IconButton({ open(RuralRoutes.AGENDA) }) { Icon(Icons.Default.Notifications, "Avisos") }; IconButton({ open(RuralRoutes.SETTINGS) }) { Icon(Icons.Default.Settings, "Configurações") } }) {
+@Composable private fun HomeScreen(open: (String) -> Unit) = Page("Simplifica Rural", FarmContextStore(LocalContext.current).farmName(), actions = { IconButton({ open(RuralRoutes.AGENDA) }) { Icon(painterResource(R.drawable.ic_rural_alert), "Avisos") }; IconButton({ open(RuralRoutes.SETTINGS) }) { Icon(painterResource(R.drawable.ic_rural_settings), "Configurações") } }) {
     val context = LocalContext.current
     val farmScope = remember { FarmContextStore(context).current() }; var period by remember { mutableIntStateOf(0) }
-    val records = remember(period) { FarmManagementService(context).records(CashViewScope.SelectedUnit(farmScope)) }
+    val production = remember(context, farmScope) {
+        FarmManagementService(context).confirmedRecords(CashViewScope.SelectedUnit(farmScope)).filter {
+            when (it.type) {
+                ManagementRecordType.PRODUCAO_OVOS, ManagementRecordType.PRODUCAO_LEITE,
+                ManagementRecordType.PESAGEM_SUINOS, ManagementRecordType.PARTO_SUINOS -> true
+                else -> false
+            }
+        }
+    }
     val financial = remember { FarmManagementService(context).financialResult(CashViewScope.SelectedUnit(farmScope)) }
-    val start = when (period) { 1 -> LocalDate.now().minusDays(6); 2 -> LocalDate.now().withDayOfMonth(1); else -> LocalDate.now() }
-    val eggs = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS && !it.date.isBefore(start) }.sumOf { it.quantity?.toInt() ?: 0 }
-    val milk = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE && !it.date.isBefore(start) }.fold(BigDecimal.ZERO) { total, item -> total + (item.quantity ?: BigDecimal.ZERO) }
-    val latestBird = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS }.maxByOrNull { it.createdAt }
-    val latestCattle = records.filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE }.maxByOrNull { it.createdAt }
-    val latestSwine = records.filter { it.type in setOf(br.com.simplificarural.domain.management.ManagementRecordType.PESAGEM_SUINOS, br.com.simplificarural.domain.management.ManagementRecordType.PARTO_SUINOS) }.maxByOrNull { it.createdAt }
-    fun latestText(record: br.com.simplificarural.domain.management.ManagementRecord?, empty: String) = record?.let { "Último: ${it.date} • ${it.description}" } ?: empty
-    val periodName = listOf("hoje", "na semana", "no mês")[period]
-    Segment(listOf("Hoje", "Semana", "Mês")) { period = it }
-    Text("Produção $periodName", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    ActivityCard("Aves", "$eggs ovos $periodName", latestText(latestBird, "Sem produção confirmada ainda"), null, Icons.Default.Egg, { open(RuralRoutes.BIRDS) })
-    ActivityCard("Bovinos", "${milk.stripTrailingZeros().toPlainString()} L $periodName", latestText(latestCattle, "Sem ordenha confirmada ainda"), null, Icons.Default.Pets, { open(RuralRoutes.CATTLE) })
-    ActivityCard("Suínos", "Lotes e desempenho", latestText(latestSwine, "Sem pesagem ou parto confirmado"), null, Icons.Default.Pets, { open(RuralRoutes.SWINE) })
-    RecentProductionHistory(records, open)
+    val today = LocalDate.now()
+    val start = when (period) { 1 -> today.minusDays(6); 2 -> today.withDayOfMonth(1); else -> today }
+    val periodRecords = remember(production, start, today) {
+        production.filter { it.date in start..today }.groupBy { it.type }
+    }
+    val eggs = periodRecords[ManagementRecordType.PRODUCAO_OVOS].orEmpty()
+    val milk = periodRecords[ManagementRecordType.PRODUCAO_LEITE].orEmpty()
+    val weights = periodRecords[ManagementRecordType.PESAGEM_SUINOS].orEmpty().size
+    val births = periodRecords[ManagementRecordType.PARTO_SUINOS].orEmpty().size
+    fun total(records: List<ManagementRecord>, unit: String): String {
+        if (records.isEmpty()) return "Sem registro no período"
+        val quantity = records.fold(BigDecimal.ZERO) { sum, record -> sum + (record.quantity ?: BigDecimal.ZERO) }
+        val formatted = java.text.NumberFormat.getNumberInstance(java.util.Locale.forLanguageTag("pt-BR")).apply {
+            maximumFractionDigits = maxOf(0, quantity.stripTrailingZeros().scale())
+        }.format(quantity)
+        return "$formatted $unit"
+    }
+    val swineSummary = if (weights == 0 && births == 0) "Sem registro no período" else {
+        val weighingLabel = if (weights == 1) "pesagem" else "pesagens"
+        val birthLabel = if (births == 1) "parto" else "partos"
+        "$weights $weighingLabel • $births $birthLabel"
+    }
+    HomeRecordingActions(open)
+    OutlinedButton({ open(RuralRoutes.DAY_SUMMARY) }, Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        Icon(painterResource(R.drawable.ic_rural_daily), contentDescription = null)
+        Spacer(Modifier.width(8.dp))
+        Text("Resumo do dia")
+    }
+    Text("Produção", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Segment(listOf("Hoje", "7 dias", "Mês")) { period = it }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0xFFE8EEE9))
+    ) {
+        Column {
+            HomeProductionRow("Ovos", total(eggs, "ovos"), R.drawable.ic_rural_egg) { open(RuralRoutes.BIRDS) }
+            HorizontalDivider(Modifier.padding(horizontal = 14.dp), color = Color(0xFFE8EEE9))
+            HomeProductionRow("Leite", total(milk, "L"), R.drawable.ic_rural_milk) { open(RuralRoutes.CATTLE) }
+            HorizontalDivider(Modifier.padding(horizontal = 14.dp), color = Color(0xFFE8EEE9))
+            HomeProductionRow("Suínos", swineSummary, R.drawable.ic_rural_swine) { open(RuralRoutes.SWINE) }
+        }
+    }
+    TextButton({ open(RuralRoutes.PRODUCTION) }, Modifier.heightIn(min = 48.dp)) {
+        Icon(painterResource(R.drawable.ic_rural_production), contentDescription = null)
+        Spacer(Modifier.width(8.dp))
+        Text("Ver gráficos")
+    }
     Text("Gestão", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
     FinancialCard(financial) { open(RuralRoutes.FINANCE) }
     Text("Atalhos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    Button({ open(RuralRoutes.ASSISTANT) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.AutoAwesome, null); Spacer(Modifier.width(8.dp)); Text("Falar com a secretária") }
+    QuickGrid(listOf(
+        "Compras" to RuralRoutes.PURCHASES,
+        "Vendas" to RuralRoutes.SALES
+    ), open)
     NoticeCard({ open(RuralRoutes.AGENDA) })
+    RecentProductionHistory(remember(production) { production.take(5) }, open)
+}
+
+@Composable
+private fun HomeProductionRow(title: String, value: String, icon: Int, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .heightIn(min = 60.dp)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp), tint = RuralGreen)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = RuralSecondaryText)
+            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        }
+        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = RuralSecondaryText)
+    }
+}
+
+@Composable
+private fun HomeRecordingActions(open: (String) -> Unit) {
+    val audio = rememberRuralAudioGuide()
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = RuralLightGreen
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Registrar agora", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                TextButton({
+                    audio.speak("Para registrar a coleta, toque na figura do ovo. Para registrar leite, toque na figura da garrafa. A caixa abre o estoque. Se quiser usar a voz, toque em Lançar e depois no microfone.")
+                }) {
+                    Icon(painterResource(R.drawable.ic_rural_audio), contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Ouvir ajuda")
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionCard("Ovos", RuralRoutes.BIRD_EGGS, Icons.Default.Egg, Modifier.weight(1f).heightIn(min = 72.dp), iconSize = 30.dp) { open(RuralRoutes.BIRD_EGGS) }
+                ActionCard("Leite", RuralRoutes.CATTLE_MILK, Icons.Default.WaterDrop, Modifier.weight(1f).heightIn(min = 72.dp), iconSize = 30.dp) { open(RuralRoutes.CATTLE_MILK) }
+                ActionCard("Estoque", RuralRoutes.STOCK, Icons.Default.Inventory2, Modifier.weight(1f).heightIn(min = 72.dp), iconSize = 30.dp) { open(RuralRoutes.STOCK) }
+            }
+        }
+    }
 }
 
 @Composable private fun AnimalsScreen(open: (String) -> Unit) = Page("Animais", "Gerencie as criações da propriedade.") {
@@ -220,7 +345,7 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     QuickGrid(listOf("Lote de aves" to RuralRoutes.BIRD_LOTS, "Lote suíno" to RuralRoutes.SWINE_LOTS, "Novo bovino" to RuralRoutes.CATTLE_NEW), open)
 }
 
-@Composable private fun BirdsScreen(open: (String) -> Unit) = Page("Aves") {
+@Composable private fun BirdsScreen(open: (String) -> Unit, back: () -> Unit) = Page("Aves", onBack = back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val animalRecords = remember { AnimalRecordsService(context) }; val management = remember { FarmManagementService(context) }
     val birds = remember { animalRecords.batches(scope, AnimalSpecies.AVE).sumOf { it.currentQuantity } }; val todayEggs = remember { management.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS && it.date == LocalDate.now() }.fold(BigDecimal.ZERO) { total, record -> total + (record.quantity ?: BigDecimal.ZERO) } }
     MetricGrid(listOf("Total de aves" to birds.toString(), "Ovos hoje" to "${todayEggs.stripTrailingZeros().toPlainString()}", "Postura" to if (birds > 0) "${todayEggs.multiply(BigDecimal(100)).divide(BigDecimal(birds), 0, java.math.RoundingMode.HALF_UP)}%" else "—", "Ração hoje" to "A registrar"))
@@ -228,30 +353,30 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     QuickGrid(listOf("Registrar ovos" to RuralRoutes.BIRD_EGGS, "Lotes" to RuralRoutes.BIRD_LOTS, "Alimentação" to RuralRoutes.feature("Alimentação aves"), "Saúde" to RuralRoutes.HEALTH, "Ocorrências" to RuralRoutes.feature("Ocorrências aves"), "Histórico" to RuralRoutes.HISTORY, "Relatórios" to RuralRoutes.feature("Relatórios aves")), open)
 }
 
-@Composable private fun CattleScreen(open: (String) -> Unit) = Page("Bovinos") {
+@Composable private fun CattleScreen(open: (String) -> Unit, back: () -> Unit) = Page("Bovinos", onBack = back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val dashboard = remember { CattleManagementService(context).dashboard(scope) }; val milk = remember { FarmManagementService(context).records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE && it.date == LocalDate.now() }.fold(BigDecimal.ZERO) { total, record -> total + (record.quantity ?: BigDecimal.ZERO) } }
     MetricGrid(listOf("Total" to dashboard.totalCattle.toString(), "Em lactação" to dashboard.lactatingCattle.toString(), "Leite hoje" to "${milk.stripTrailingZeros().toPlainString()} L", "Média/vaca" to "${dashboard.averageMilkPerLactatingCow.stripTrailingZeros().toPlainString()} L"))
     QuickGrid(listOf("Registrar leite" to RuralRoutes.CATTLE_MILK, "Fechar leite" to RuralRoutes.CATTLE_MILK_CLOSURE, "Animais" to RuralRoutes.CATTLE_LIST, "Alimentação" to RuralRoutes.CATTLE_FEED, "Reprodução" to RuralRoutes.CATTLE_REPRODUCTION, "Saúde" to RuralRoutes.HEALTH, "Histórico" to RuralRoutes.HISTORY, "Relatórios" to RuralRoutes.feature("Relatórios bovinos")), open)
     MilkDiaryTable(MilkSecretaryService(context), scope)
 }
 
-@Composable private fun SwineScreen(open: (String) -> Unit) = Page("Suínos") {
+@Composable private fun SwineScreen(open: (String) -> Unit, back: () -> Unit) = Page("Suínos", onBack = back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val records = remember { AnimalRecordsService(context) }; val batches = remember { records.batches(scope, AnimalSpecies.SUINO) }; val animals = remember { records.animals(scope, AnimalSpecies.SUINO) }; val total = batches.sumOf { it.currentQuantity } + animals.count { it.status == br.com.simplificarural.domain.animals.AnimalStatus.ATIVO }
     MetricGrid(listOf("Total" to total.toString(), "Lotes" to batches.size.toString(), "Matrizes" to animals.count { it.status == br.com.simplificarural.domain.animals.AnimalStatus.ATIVO }.toString(), "Leitões" to "A registrar"))
     QuickGrid(listOf("Engorda" to RuralRoutes.SWINE_FATTENING, "Matrizes" to RuralRoutes.SWINE_BREEDING), open)
 }
 
-@Composable private fun FatteningScreen(open: (String) -> Unit) = Page("Suínos — Engorda") {
+@Composable private fun FatteningScreen(open: (String) -> Unit, back: () -> Unit) = Page("Suínos — Engorda", onBack = back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val lots = remember { AnimalRecordsService(context).batches(scope, AnimalSpecies.SUINO) }; val performance = remember { FarmManagementService(context).swinePerformance(CashViewScope.SelectedUnit(scope)) }
     val gain = performance.averageDailyGainKg?.multiply(BigDecimal(1000))?.stripTrailingZeros()?.toPlainString() ?: "—"
     MetricGrid(listOf("Animais" to lots.sumOf { it.currentQuantity }.toString(), "Ganho médio" to "$gain g/dia", "Ração/dia" to "A registrar", "Desmame/lote" to (performance.weanedPerLitter?.stripTrailingZeros()?.toPlainString() ?: "—")))
     QuickGrid(listOf("Lotes" to RuralRoutes.SWINE_LOTS, "Registrar peso" to RuralRoutes.SWINE_WEIGHT, "Alimentação" to RuralRoutes.feature("Alimentação suínos"), "Saúde" to RuralRoutes.HEALTH, "Mortalidade" to RuralRoutes.feature("Mortalidade suínos"), "Histórico" to RuralRoutes.HISTORY, "Relatórios" to RuralRoutes.feature("Relatórios suínos")), open)
 }
 
-@Composable private fun BreedingScreen(open: (String) -> Unit) = Page("Suínos — Matrizes") {
+@Composable private fun BreedingScreen(open: (String) -> Unit, back: () -> Unit) = Page("Suínos — Matrizes", onBack = back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val animals = remember { AnimalRecordsService(context).animals(scope, AnimalSpecies.SUINO) }; val farrowings = remember { FarmManagementService(context).records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PARTO_SUINOS } }; val piglets = farrowings.fold(BigDecimal.ZERO) { total, record -> total + (record.quantity ?: BigDecimal.ZERO) }
     MetricGrid(listOf("Matrizes" to animals.count { it.status == br.com.simplificarural.domain.animals.AnimalStatus.ATIVO }.toString(), "Prenhas" to "A registrar", "Partos" to farrowings.size.toString(), "Leitões" to piglets.stripTrailingZeros().toPlainString()))
-    QuickGrid(listOf("Matrizes" to RuralRoutes.SOW_DETAIL, "Cio" to RuralRoutes.feature("Cio suínos"), "Cobertura" to RuralRoutes.feature("Cobertura suínos"), "Inseminação" to RuralRoutes.feature("Inseminação suínos"), "Prenhez" to RuralRoutes.feature("Prenhez suínos"), "Partos" to RuralRoutes.SWINE_FARROWING, "Leitões" to RuralRoutes.feature("Leitões suínos"), "Desmame" to RuralRoutes.SWINE_FARROWING, "Histórico" to RuralRoutes.HISTORY), open)
+    QuickGrid(listOf("Matrizes" to RuralRoutes.SOW_DETAIL, "Cio" to RuralRoutes.feature("Cio suínos"), "Cobertura" to RuralRoutes.feature("Cobertura suínos"), "Inseminação" to RuralRoutes.feature("Inseminação suínos"), "Prenhez" to RuralRoutes.feature("Prenhez suínos"), "Parto e desmame" to RuralRoutes.SWINE_FARROWING, "Leitões" to RuralRoutes.feature("Leitões suínos"), "Histórico" to RuralRoutes.HISTORY), open)
 }
 
 @Composable private fun StockScreen(open: (String) -> Unit) = Page("Estoque") {
@@ -269,26 +394,58 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     if (stock.isNotEmpty() && filtered.isEmpty()) EmptyState("Nenhum item encontrado", "Ajuste a busca ou selecione outra categoria.") else filtered.forEach { item -> StockRow(item.productName, "${item.quantity.stripTrailingZeros().toPlainString()} ${item.unit}", itemCategory(item), item.quantity <= BigDecimal.ZERO) { open(RuralRoutes.stockDetail(item.productName)) } }
 }
 
-@Composable private fun FinanceScreen(open: (String) -> Unit) = Page("Financeiro") {
-    val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; var general by remember { mutableStateOf(false) }; val viewScope: CashViewScope = if (general) CashViewScope.General(scope.organizationId) else CashViewScope.SelectedUnit(scope); val result = remember(general) { service.financialResult(viewScope) }; val entries = remember(general) { service.cashEntries(viewScope) }
+@Composable
+private fun FinanceScreen(open: (String) -> Unit) = Page("Caixa") {
+    val context = LocalContext.current
+    val scope = remember(context) { FarmContextStore(context).current() }
+    val service = remember(context) { FarmManagementService(context) }
+    var general by remember { mutableStateOf(false) }
+    val viewScope = if (general) CashViewScope.General(scope.organizationId) else CashViewScope.SelectedUnit(scope)
+    val entries = remember(viewScope) { service.cashEntries(viewScope) }
+    val summary = remember(entries, viewScope) { CashAggregator.summarize(entries, viewScope) }
+    val recent = remember(entries) { entries.asReversed().sortedByDescending { it.date }.take(8) }
+
     Segment(listOf("Esta unidade", "Caixa geral")) { general = it == 1 }
-    MetricGrid(listOf("Resultado" to money(result.netProfit), "Entradas" to money(result.revenue), "Custos" to money(result.totalCost), "Caixa" to money(result.cashGeneration)))
-    QuickGrid(listOf("Nova entrada" to RuralRoutes.ENTRY, "Nova despesa" to RuralRoutes.EXPENSE, "Compras" to RuralRoutes.PURCHASES, "Vendas" to RuralRoutes.SALES), open)
-    Text("Histórico financeiro", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-    if (entries.isEmpty()) EmptyState("Sem lançamentos financeiros", "Compras, vendas e despesas confirmadas aparecerão aqui.") else entries.take(8).forEach { entry -> FinancialHistoryRow(entry) }
+    PressCard {
+        Text("Saldo", color = RuralSecondaryText)
+        Text(money(summary.balance), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        HorizontalDivider()
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) { MiniMetric("Entrou", money(summary.entries), RuralSuccess) }
+            Column(Modifier.weight(1f)) { MiniMetric("Saiu", money(summary.exits), RuralDanger) }
+        }
+    }
+    QuickGrid(listOf("Nova entrada" to RuralRoutes.ENTRY, "Nova despesa" to RuralRoutes.EXPENSE,
+        "Compras" to RuralRoutes.PURCHASES, "Vendas" to RuralRoutes.SALES), open)
+    Text("Últimos lançamentos", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    if (recent.isEmpty()) EmptyState("Caixa sem movimentação", "Os lançamentos confirmados aparecem aqui.")
+    else recent.forEach { FinancialHistoryRow(it) }
 }
-@Composable private fun FinancialHistoryRow(entry: br.com.simplificarural.domain.financial.CashEntry) { var expanded by remember { mutableStateOf(false) }; PressCard { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(entry.description, fontWeight = FontWeight.Medium); Text(entry.date.toString(), style = MaterialTheme.typography.bodySmall, color = RuralSecondaryText) }; Text(money(entry.amount), color = if (entry.kind == br.com.simplificarural.domain.financial.CashEntryKind.ENTRADA) RuralSuccess else RuralDanger, fontWeight = FontWeight.Bold); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Recolher" else "Detalhes", tint = RuralSecondaryText) }; if (expanded) Text("${if (entry.kind == br.com.simplificarural.domain.financial.CashEntryKind.ENTRADA) "Entrada" else "Saída"} registrada no caixa em ${entry.date}.", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
+
+@Composable
+private fun FinancialHistoryRow(entry: CashEntry) = PressCard {
+    val incoming = entry.kind == CashEntryKind.ENTRADA
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(entry.description, fontWeight = FontWeight.Medium)
+            Text(entry.date.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                style = MaterialTheme.typography.bodySmall, color = RuralSecondaryText)
+        }
+        Text((if (incoming) "+ " else "− ") + money(entry.amount),
+            color = if (incoming) RuralSuccess else RuralDanger, fontWeight = FontWeight.Bold)
+    }
+}
 
 @Composable private fun EggRegistrationScreen(back: () -> Unit, message: (String) -> Unit) = Page("Registrar ovos", "Data e hora são incluídas automaticamente.", back) {
     val context = LocalContext.current; var eggs by remember { mutableStateOf("") }
-    OutlinedTextField(eggs, { eggs = it }, Modifier.fillMaxWidth(), label = { Text("Ovos aproveitáveis") }, suffix = { Text("unidades") }, shape = RoundedCornerShape(14.dp))
+    OutlinedTextField(eggs, { eggs = it }, Modifier.fillMaxWidth(), label = { Text("Ovos aproveitáveis") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), suffix = { Text("unidades") }, shape = RoundedCornerShape(14.dp))
     Button({ runCatching { FarmManagementService(context).registerEggProduction(FarmContextStore(context).current(), eggs.toInt()) }.onSuccess { message("Produção salva com data e horário atuais."); back() }.onFailure { message("Informe uma quantidade válida.") } }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar produção") }
 }
 @Composable private fun MilkRegistrationScreen(back: () -> Unit, message: (String) -> Unit) = Page("Registrar leite", "Data e hora são registradas automaticamente.", back) {
     val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val cattle = remember { CattleManagementService(context) }; val cows = remember { cattle.cows(scope) }; val now = java.time.LocalDateTime.now()
     var selectedCow by remember { mutableStateOf("") }; var liters by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }
     if (cows.isNotEmpty()) { var expanded by remember { mutableStateOf(false) }; ExposedDropdownMenuBox(expanded, { expanded = it }) { OutlinedTextField(selectedCow, {}, Modifier.menuAnchor().fillMaxWidth(), readOnly = true, label = { Text("Vaca (opcional)") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, shape = RoundedCornerShape(14.dp)); ExposedDropdownMenu(expanded, { expanded = false }) { cows.forEach { cow -> DropdownMenuItem({ Text("${cow.name} • ${cow.earTag}") }, { selectedCow = cow.id; expanded = false }) } } } } else OutlinedTextField(selectedCow, { selectedCow = it }, Modifier.fillMaxWidth(), label = { Text("Identificação da vaca (opcional)") }, shape = RoundedCornerShape(14.dp))
-    OutlinedTextField(liters, { liters = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade ordenhada") }, suffix = { Text("litros") }, singleLine = true, shape = RoundedCornerShape(14.dp)); Text("Horário do lançamento: ${now.toLocalTime().withSecond(0).withNano(0)}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall); OutlinedTextField(notes, { notes = it }, Modifier.fillMaxWidth(), label = { Text("Observação") }, shape = RoundedCornerShape(14.dp))
+    OutlinedTextField(liters, { liters = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade ordenhada") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), suffix = { Text("litros") }, singleLine = true, shape = RoundedCornerShape(14.dp)); Text("Horário do lançamento: ${now.toLocalTime().withSecond(0).withNano(0)}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall); OutlinedTextField(notes, { notes = it }, Modifier.fillMaxWidth(), label = { Text("Observação") }, shape = RoundedCornerShape(14.dp))
     Button({ runCatching { val amount = liters.decimal(); require(amount > BigDecimal.ZERO); FarmManagementService(context).registerMilkProduction(scope, amount); val shift = MilkShift.automatic(now.hour); MilkSecretaryService(context).record(scope, amount, shift, now); cows.firstOrNull { it.id == selectedCow }?.let { cow -> cattle.registerMilk(cow.id, if (shift == MilkShift.MANHA) amount else BigDecimal.ZERO, if (shift == MilkShift.TARDE) amount else BigDecimal.ZERO, if (shift == MilkShift.NOITE) amount else BigDecimal.ZERO, notes = notes.ifBlank { null }) } }.onSuccess { message("Ordenha salva com horário automático."); back() }.onFailure { message("Informe uma quantidade válida.") } }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar ordenha") }
 }
 @Composable private fun MilkClosureScreen(back: () -> Unit, message: (String) -> Unit) = Page("Fechar caderneta de leite", "Fechamento com a empresa; vendas avulsas ficam fora deste valor.", back) {
@@ -304,10 +461,49 @@ private fun RuralScreen(route: String, root: Boolean, open: (String) -> Unit, ba
     Button({ runCatching { val selectedCategory = categories[categoryIndex]; val financialCategory = when (selectedCategory) { "Alimentação" -> br.com.simplificarural.domain.management.FinancialCategory.RACAO; "Saúde" -> br.com.simplificarural.domain.management.FinancialCategory.SANIDADE; "Ferramentas" -> br.com.simplificarural.domain.management.FinancialCategory.MANUTENCAO; else -> br.com.simplificarural.domain.management.FinancialCategory.OUTRA_DESPESA }; FarmManagementService(context).registerPurchase(FarmContextStore(context).current(), product, quantity.replace(',', '.').toBigDecimal(), unit, price.replace(',', '.').toBigDecimal(), financialCategory, inventoryCategory = selectedCategory) }.onSuccess { message("Item adicionado com data e horário atuais."); back() }.onFailure { message("Informe produto, quantidade e preço válidos.") } }, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Text("Adicionar ao estoque") }
 }
 @Composable private fun MilkDiaryTable(secretary: MilkSecretaryService, scope: br.com.simplificarural.domain.property.FarmScope) {
-    val today = LocalDate.now(); var view by remember { mutableIntStateOf(0) }; var closing by remember { mutableStateOf(secretary.closingDay(scope)) }; var selectedDay by remember { mutableStateOf(today) }; var closingMenu by remember { mutableStateOf(false) }; val records = secretary.records(scope); val start = when (view) { 0 -> today; 1 -> today.minusDays(((today.dayOfWeek.value - closing.value + 7) % 7).toLong()); else -> today.withDayOfMonth(1) }; val days = generateSequence(start) { it.plusDays(1).takeIf { next -> !next.isAfter(today) } }.toList(); val selected = selectedDay.takeIf { it in days } ?: today; val byDay = records.groupBy { it.recordedAt.toLocalDate() }; val periodRecords = records.filter { !it.recordedAt.toLocalDate().isBefore(start) && !it.recordedAt.toLocalDate().isAfter(today) }; val total = periodRecords.fold(BigDecimal.ZERO) { sum, entry -> sum + entry.liters }; fun dayName(day: java.time.DayOfWeek) = listOf("SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM")[day.value - 1]
-    Text("Caderneta de ordenhas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Segment(listOf("Hoje", "Semana", "Mês")) { view = it; selectedDay = today }
-    if (view == 1) Row(verticalAlignment = Alignment.CenterVertically) { Text("Fechamento: ${dayName(closing)}", Modifier.weight(1f), color = RuralSecondaryText); Box { TextButton({ closingMenu = true }) { Text("Alterar") }; DropdownMenu(closingMenu, { closingMenu = false }) { java.time.DayOfWeek.entries.forEach { day -> DropdownMenuItem({ Text(dayName(day)) }, { closing = day; secretary.setClosingDay(scope, day); closingMenu = false; selectedDay = today }) } } } }
-    Text(if (view == 0) "Detalhe de hoje" else "${start.dayOfMonth.toString().padStart(2, '0')}/${start.monthValue.toString().padStart(2, '0')} a ${today.dayOfMonth.toString().padStart(2, '0')}/${today.monthValue.toString().padStart(2, '0')}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall); if (view > 0) MetricGrid(listOf(if (view == 1) "Total da semana" to "${total.stripTrailingZeros().toPlainString()} L" else "Total do mês" to "${total.stripTrailingZeros().toPlainString()} L"))
+    val today = LocalDate.now()
+    var view by remember { mutableIntStateOf(1) }
+    var closing by remember { mutableStateOf(secretary.closingDay(scope)) }
+    var weeksBack by remember { mutableIntStateOf(0) }
+    var selectedDay by remember { mutableStateOf(today) }
+    var closingMenu by remember { mutableStateOf(false) }
+    val cycle = milkCycle(today.minusWeeks(weeksBack.toLong()), closing)
+    val start = when (view) { 0 -> today; 1 -> cycle.start; else -> today.withDayOfMonth(1) }
+    val end = if (view == 1) cycle.endInclusive else today
+    val days = generateSequence(start) { it.plusDays(1).takeUnless { next -> next.isAfter(end) } }.toList()
+    val selected = selectedDay.takeIf { it in days } ?: minOf(today, end)
+    val byDay = remember(scope) { secretary.records(scope).groupBy { it.recordedAt.toLocalDate() } }
+    val total = days.asSequence().filterNot { it.isAfter(today) }.flatMap { byDay[it].orEmpty().asSequence() }.fold(BigDecimal.ZERO) { sum, entry -> sum + entry.liters }
+    val locale = java.util.Locale.forLanguageTag("pt-BR")
+    val dateFormat = java.time.format.DateTimeFormatter.ofPattern("dd/MM", locale)
+    fun dayName(day: java.time.DayOfWeek) = day.getDisplayName(java.time.format.TextStyle.SHORT, locale)
+    Text("Caderneta de ordenhas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Segment(listOf("Hoje", "Ciclo de 7 dias", "Mês"), initialSelection = 1) { view = it; selectedDay = today }
+    if (view == 1) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Fecha na ${closing.getDisplayName(java.time.format.TextStyle.FULL, locale)}", Modifier.weight(1f), color = RuralSecondaryText)
+            Box {
+                TextButton({ closingMenu = true }) { Text("Alterar dia") }
+                DropdownMenu(closingMenu, { closingMenu = false }) {
+                    java.time.DayOfWeek.entries.forEach { day ->
+                        DropdownMenuItem({ Text(day.getDisplayName(java.time.format.TextStyle.FULL, locale)) }, {
+                            closing = day; secretary.setClosingDay(scope, day)
+                            closingMenu = false; selectedDay = today; weeksBack = 0
+                        })
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton({ weeksBack++ }) { Icon(Icons.Default.ChevronLeft, "Ciclo anterior") }
+            Text("${start.format(dateFormat)} a ${end.format(dateFormat)}", Modifier.weight(1f))
+            IconButton({ weeksBack-- }, enabled = weeksBack > 0) { Icon(Icons.Default.ChevronRight, "Próximo ciclo") }
+        }
+    }
+    if (view > 0) {
+        val title = if (view == 2) "Total do mês" else if (today.isAfter(end)) "Total fechado" else "Total do ciclo até hoje"
+        Text("$title · ${total.stripTrailingZeros().toPlainString().replace('.', ',')} L", fontWeight = FontWeight.Bold)
+    }
     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { items(days) { day -> val dayTotal = byDay[day].orEmpty().fold(BigDecimal.ZERO) { sum, entry -> sum + entry.liters }; FilterChip(selected = day == selected, onClick = { selectedDay = day }, label = { Text("${dayName(day.dayOfWeek)}\n${day.dayOfMonth.toString().padStart(2, '0')} • ${dayTotal.stripTrailingZeros().toPlainString()}L") }) } }
     val entries = byDay[selected].orEmpty().sortedBy { it.recordedAt }; PressCard { Text("${dayName(selected.dayOfWeek)} ${selected.dayOfMonth.toString().padStart(2, '0')}/${selected.monthValue.toString().padStart(2, '0')}", fontWeight = FontWeight.Bold); if (entries.isEmpty()) Text("Sem ordenha registrada neste dia.", color = RuralSecondaryText) else entries.forEach { entry -> Row { Text(entry.recordedAt.toLocalTime().withSecond(0).withNano(0).toString(), Modifier.weight(1f)); Text("${entry.liters.stripTrailingZeros().toPlainString()} L", fontWeight = FontWeight.Bold) } }; HorizontalDivider(); Row { Text("Total do dia", Modifier.weight(1f), fontWeight = FontWeight.Bold); Text("${entries.fold(BigDecimal.ZERO) { sum, entry -> sum + entry.liters }.stripTrailingZeros().toPlainString()} L", color = RuralDarkGreen, fontWeight = FontWeight.Bold) } }
 }
@@ -366,8 +562,8 @@ private fun String.decimal(): BigDecimal = replace(',', '.').toBigDecimal()
 @Composable private fun SowDetailScreen(back: () -> Unit) = Page("Matrizes", "Registros de matrizes cadastradas na propriedade.", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val animals = remember { AnimalRecordsService(context).animals(scope, AnimalSpecies.SUINO) }; val farrowings = remember { FarmManagementService(context).records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.PARTO_SUINOS } }; MetricGrid(listOf("Matrizes identificadas" to animals.size.toString(), "Partos registrados" to farrowings.size.toString())); if (animals.isEmpty()) EmptyState("Nenhuma matriz cadastrada", "Cadastre uma identificação de suíno na tela Animais para acompanhar eventos individuais.") else animals.forEach { animal -> PressCard { Text(animal.identification, fontWeight = FontWeight.Bold); Text("${animal.status.name.lowercase().replaceFirstChar { it.uppercase() }} • consulte saúde e reprodução", color = RuralSecondaryText) } }; if (farrowings.isNotEmpty()) ExpandableDetail("Histórico de partos", farrowings.take(8).joinToString("\n") { "${it.date}: ${it.quantity?.stripTrailingZeros()?.toPlainString()} nascidos vivos" }) }
 @Composable private fun ExpandableDetail(title: String, detail: String) { var expanded by remember { mutableStateOf(false) }; PressCard { Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Recolher" else "Expandir", tint = RuralGreen) }; if (expanded) Text(detail, color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun StockDetailScreen(product: String, back: () -> Unit, open: (String) -> Unit) = Page(product, "Histórico do item", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; val records = remember { service.records(CashViewScope.SelectedUnit(scope)).filter { it.productName.equals(product, true) } }; val balance = service.stock(CashViewScope.SelectedUnit(scope)).firstOrNull { it.productName.equals(product, true) }; val alerts = remember { StockAlertService(context) }; var minimum by remember(balance) { mutableStateOf(balance?.let { alerts.minimum(scope, it.productName, it.unit).stripTrailingZeros().toPlainString() }.orEmpty()) }; MetricGrid(listOf("Quantidade atual" to balance?.let { "${it.quantity.stripTrailingZeros().toPlainString()} ${it.unit}" }.orEmpty(), "Categoria" to balance?.let(::itemCategory).orEmpty())); balance?.let { item -> OutlinedTextField(minimum, { minimum = it }, Modifier.fillMaxWidth(), label = { Text("Estoque mínimo (${item.unit})") }, shape = RoundedCornerShape(14.dp)); Button({ runCatching { alerts.setMinimum(scope, item.productName, item.unit, minimum.replace(',', '.').toBigDecimal()) } }, Modifier.fillMaxWidth().height(44.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar mínimo para alerta") } }; Button({ open(RuralRoutes.NEW_PURCHASE) }, Modifier.fillMaxWidth().height(48.dp)) { Text("Adicionar entrada") }; Text("Movimentações", fontWeight = FontWeight.Bold); if (records.isEmpty()) EmptyState("Sem movimentações", "As entradas e saídas confirmadas deste item aparecerão aqui.") else records.forEach { record -> PressCard { Text(record.description, fontWeight = FontWeight.Medium); Text("${record.date} • ${record.operationFlows().joinToString(" + ") { it.name.lowercase().replace('_', ' ') } }", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } } }
-@Composable private fun PurchasesScreen(open: (String) -> Unit, message: (String) -> Unit) = Page("Compras") { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; var revision by remember { mutableIntStateOf(0) }; val records = remember(revision) { service.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.COMPRA } }; MetricGrid(listOf("Compras" to records.count { !service.isCancelled(it) }.toString(), "Total gasto" to money(records.filterNot(service::isCancelled).fold(BigDecimal.ZERO) { total, record -> total + (record.totalAmount ?: BigDecimal.ZERO) }))); Button({ open(RuralRoutes.NEW_PURCHASE) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Nova compra") }; if (records.isEmpty()) EmptyState("Sem compras", "Cadastre a primeira compra para atualizar estoque e caixa.") else records.forEach { record -> AuditableRecordRow(record, service.isCancelled(record), { reason -> runCatching { service.cancel(scope, record.id, reason); revision++ }.onSuccess { message("Compra cancelada com estorno registrado.") }.onFailure { message(it.message ?: "Não foi possível cancelar.") } }) } }
-@Composable private fun SalesScreen(open: (String) -> Unit, message: (String) -> Unit) = Page("Vendas") { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; var revision by remember { mutableIntStateOf(0) }; val records = remember(revision) { service.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.VENDA && it.productName != null } }; MetricGrid(listOf("Vendas" to records.count { !service.isCancelled(it) }.toString(), "Recebido" to money(records.filterNot(service::isCancelled).fold(BigDecimal.ZERO) { total, record -> total + (record.totalAmount ?: BigDecimal.ZERO) }))); Button({ open(RuralRoutes.NEW_SALE) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Nova venda") }; if (records.isEmpty()) EmptyState("Sem vendas", "Registre uma venda para atualizar o estoque e caixa.") else records.forEach { record -> AuditableRecordRow(record, service.isCancelled(record), { reason -> runCatching { service.cancel(scope, record.id, reason); revision++ }.onSuccess { message("Venda cancelada com estorno registrado.") }.onFailure { message(it.message ?: "Não foi possível cancelar.") } }) } }
+@Composable private fun PurchasesScreen(open: (String) -> Unit, back: () -> Unit, message: (String) -> Unit) = Page("Compras", onBack = back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; var revision by remember { mutableIntStateOf(0) }; val records = remember(revision) { service.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.COMPRA } }; MetricGrid(listOf("Compras" to records.count { !service.isCancelled(it) }.toString(), "Total gasto" to money(records.filterNot(service::isCancelled).fold(BigDecimal.ZERO) { total, record -> total + (record.totalAmount ?: BigDecimal.ZERO) }))); Button({ open(RuralRoutes.NEW_PURCHASE) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Nova compra") }; if (records.isEmpty()) EmptyState("Sem compras", "Cadastre a primeira compra para atualizar estoque e caixa.") else records.forEach { record -> AuditableRecordRow(record, service.isCancelled(record), { reason -> runCatching { service.cancel(scope, record.id, reason); revision++ }.onSuccess { message("Compra cancelada com estorno registrado.") }.onFailure { message(it.message ?: "Não foi possível cancelar.") } }) } }
+@Composable private fun SalesScreen(open: (String) -> Unit, back: () -> Unit, message: (String) -> Unit) = Page("Vendas", onBack = back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { FarmManagementService(context) }; var revision by remember { mutableIntStateOf(0) }; val records = remember(revision) { service.records(CashViewScope.SelectedUnit(scope)).filter { it.type == br.com.simplificarural.domain.management.ManagementRecordType.VENDA && it.productName != null } }; MetricGrid(listOf("Vendas" to records.count { !service.isCancelled(it) }.toString(), "Recebido" to money(records.filterNot(service::isCancelled).fold(BigDecimal.ZERO) { total, record -> total + (record.totalAmount ?: BigDecimal.ZERO) }))); Button({ open(RuralRoutes.NEW_SALE) }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Nova venda") }; if (records.isEmpty()) EmptyState("Sem vendas", "Registre uma venda para atualizar o estoque e caixa.") else records.forEach { record -> AuditableRecordRow(record, service.isCancelled(record), { reason -> runCatching { service.cancel(scope, record.id, reason); revision++ }.onSuccess { message("Venda cancelada com estorno registrado.") }.onFailure { message(it.message ?: "Não foi possível cancelar.") } }) } }
 @Composable private fun AuditableRecordRow(record: br.com.simplificarural.domain.management.ManagementRecord, cancelled: Boolean, cancel: (String) -> Unit) { var menu by remember { mutableStateOf(false) }; var confirm by remember { mutableStateOf(false) }; PressCard { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(record.description, fontWeight = FontWeight.Bold); Text("${record.quantity?.stripTrailingZeros()?.toPlainString().orEmpty()} ${record.unit.orEmpty()} • ${money(record.totalAmount ?: BigDecimal.ZERO)}", color = RuralSecondaryText); if (cancelled) Text("Cancelado — mantido para auditoria", color = RuralDanger, style = MaterialTheme.typography.bodySmall) }; if (!cancelled) Box { IconButton({ menu = true }) { Icon(Icons.Default.MoreVert, "Mais ações") }; DropdownMenu(menu, { menu = false }) { DropdownMenuItem({ Text("Cancelar lançamento") }, { menu = false; confirm = true }) } } } }; if (confirm) AlertDialog({ confirm = false }, title = { Text("Cancelar lançamento?") }, text = { Text("O lançamento ficará no histórico e deixará de contar no caixa e estoque.") }, confirmButton = { TextButton({ cancel("Cancelado pelo usuário"); confirm = false }) { Text("Confirmar") } }, dismissButton = { TextButton({ confirm = false }) { Text("Voltar") } }) }
 @Composable private fun SaleFormScreen(back: () -> Unit, message: (String) -> Unit) = Page("Nova venda", "Atualiza estoque e caixa ao salvar.", back) { val context = LocalContext.current; var product by remember { mutableStateOf("") }; var quantity by remember { mutableStateOf("") }; var unit by remember { mutableStateOf("unidades") }; var price by remember { mutableStateOf("") }; OutlinedTextField(product, { product = it }, Modifier.fillMaxWidth(), label = { Text("Produto") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(quantity, { quantity = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(unit, { unit = it }, Modifier.fillMaxWidth(), label = { Text("Unidade") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(price, { price = it }, Modifier.fillMaxWidth(), label = { Text("Preço por unidade (R$)") }, shape = RoundedCornerShape(14.dp)); Button({ runCatching { val service = FarmManagementService(context); val amount = quantity.replace(',', '.').toBigDecimal(); val unitPrice = price.replace(',', '.').toBigDecimal(); if (product.contains("bandeja", true) || product.contains("cartela", true)) service.registerEggTraySale(FarmContextStore(context).current(), product, amount, unit, unitPrice) else service.registerSale(FarmContextStore(context).current(), product, amount, unit, unitPrice) }.onSuccess { message("Venda salva no estoque e caixa."); back() }.onFailure { message(it.message ?: "Informe produto, quantidade e preço válidos.") } }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar venda") } }
 @Composable private fun SwineWeightScreen(back: () -> Unit, message: (String) -> Unit) = Page("Registrar pesagem", "Use o peso médio do lote; data e hora são registradas automaticamente.", back) { val context = LocalContext.current; var animals by remember { mutableStateOf("") }; var initial by remember { mutableStateOf("") }; var final by remember { mutableStateOf("") }; var days by remember { mutableStateOf("") }; OutlinedTextField(animals, { animals = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade de animais") }, shape = RoundedCornerShape(14.dp)); NutritionNumberField("Peso médio anterior", initial) { initial = it }; NutritionNumberField("Peso médio atual", final) { final = it }; OutlinedTextField(days, { days = it }, Modifier.fillMaxWidth(), label = { Text("Dias desde a pesagem anterior") }, shape = RoundedCornerShape(14.dp)); Button({ runCatching { FarmManagementService(context).registerSwineWeight(FarmContextStore(context).current(), animals.toInt(), initial.decimal(), final.decimal(), days.toInt()) }.onSuccess { message("Pesagem salva no desempenho dos suínos."); back() }.onFailure { message("Confira quantidade, pesos e dias informados.") } }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Text("Salvar pesagem") } }
@@ -406,7 +602,26 @@ private fun String.decimal(): BigDecimal = replace(',', '.').toBigDecimal()
     }
 }
 @Composable private fun ProductionChart(title: String, values: List<BigDecimal>, unit: String, dates: List<LocalDate>) { val total = values.fold(BigDecimal.ZERO, BigDecimal::plus); val max = values.maxOrNull()?.takeIf { it > BigDecimal.ZERO } ?: BigDecimal.ONE; PressCard { Text(title, fontWeight = FontWeight.Bold); Text("${total.stripTrailingZeros().toPlainString()} $unit no período", color = RuralDarkGreen, fontWeight = FontWeight.Bold); Row(Modifier.fillMaxWidth().height(86.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) { values.forEachIndexed { index, value -> Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) { Box(Modifier.fillMaxWidth().height((72f * value.divide(max, 3, java.math.RoundingMode.HALF_UP).toFloat()).coerceAtLeast(3f).dp), contentAlignment = Alignment.TopCenter) { Surface(Modifier.fillMaxSize(), color = RuralGreen, shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)) {} }; if (dates.size <= 7) Text(dates.getOrNull(index)?.dayOfMonth?.toString().orEmpty(), style = MaterialTheme.typography.labelSmall, color = RuralSecondaryText) } } } } }
-@Composable private fun MoreScreen(open: (String) -> Unit) = Page("Mais") { MoreGroup("Gestão", listOf("Produção" to RuralRoutes.PRODUCTION, "Pedidos" to RuralRoutes.ORDERS, "Agenda" to RuralRoutes.AGENDA, "Saúde" to RuralRoutes.HEALTH, "Compras" to RuralRoutes.PURCHASES, "Vendas" to RuralRoutes.SALES), open); MoreGroup("Análise", listOf("Relatórios" to RuralRoutes.PRODUCTION, "Indicadores" to RuralRoutes.PRODUCTION, "Histórico geral" to RuralRoutes.HISTORY), open); MoreGroup("Sistema", listOf("Embalagens de ovos" to RuralRoutes.PACKAGING, "Configurações" to RuralRoutes.SETTINGS, "Backup" to RuralRoutes.BACKUP, "Assistente Rural" to RuralRoutes.ASSISTANT, "Sobre" to RuralRoutes.ABOUT), open) }
+@Composable private fun MoreScreen(open: (String) -> Unit) = Page("Mais") {
+    MoreGroup("Gestão", listOf(
+        "Agenda" to RuralRoutes.AGENDA,
+        "Saúde" to RuralRoutes.HEALTH,
+        "Pedidos" to RuralRoutes.ORDERS,
+        "Compras" to RuralRoutes.PURCHASES,
+        "Vendas" to RuralRoutes.SALES
+    ), open)
+    MoreGroup("Acompanhamento", listOf(
+        "Resumo do dia" to RuralRoutes.DAY_SUMMARY,
+        "Produção e indicadores" to RuralRoutes.PRODUCTION,
+        "Histórico geral" to RuralRoutes.HISTORY
+    ), open)
+    MoreGroup("Sistema", listOf(
+        "Embalagens de ovos" to RuralRoutes.PACKAGING,
+        "Configurações" to RuralRoutes.SETTINGS,
+        "Backup" to RuralRoutes.BACKUP,
+        "Sobre" to RuralRoutes.ABOUT
+    ), open)
+}
 
 @Composable private fun OperationalTestScreen(back: () -> Unit) = Page("Teste da secretária", "Analise, revise e confirme", back) {
     val context = LocalContext.current
@@ -428,7 +643,7 @@ private fun String.decimal(): BigDecimal = replace(',', '.').toBigDecimal()
         dismissButton = { TextButton(onClick = { if (editing) editing = false else editing = true }) { Text(if (editing) "Cancelar edição" else "Editar manualmente") } }
     )
 }
-@Composable private fun SettingsScreen(open: (String) -> Unit) = Page("Configurações") { listOf("Propriedade" to RuralRoutes.feature("Propriedade"), "Atividades" to RuralRoutes.ACTIVITIES, "Aves" to RuralRoutes.BIRDS, "Bovinos" to RuralRoutes.CATTLE, "Suínos" to RuralRoutes.SWINE, "Financeiro" to RuralRoutes.FINANCE, "Alertas" to RuralRoutes.AGENDA, "Backup" to RuralRoutes.BACKUP, "Aparência" to RuralRoutes.feature("Aparência"), "Geral" to RuralRoutes.feature("Geral")).forEach { (name, route) -> PressCard({ open(route) }) { Row(verticalAlignment = Alignment.CenterVertically) { Text(name, Modifier.weight(1f), fontWeight = FontWeight.Medium); Icon(Icons.Default.ChevronRight, null, tint = RuralSecondaryText) } } } }
+@Composable private fun SettingsScreen(open: (String) -> Unit, back: () -> Unit) = Page("Configurações", onBack = back) { listOf("Atividades" to RuralRoutes.ACTIVITIES, "Aves" to RuralRoutes.BIRDS, "Bovinos" to RuralRoutes.CATTLE, "Suínos" to RuralRoutes.SWINE, "Financeiro" to RuralRoutes.FINANCE, "Alertas" to RuralRoutes.AGENDA, "Backup" to RuralRoutes.BACKUP).forEach { (name, route) -> PressCard({ open(route) }) { Row(verticalAlignment = Alignment.CenterVertically) { Text(name, Modifier.weight(1f), fontWeight = FontWeight.Medium); Icon(Icons.Default.ChevronRight, null, tint = RuralSecondaryText) } } } }
 @Composable private fun ActivitiesScreen(back: () -> Unit, message: (String) -> Unit) = Page("Atividades da propriedade", "Módulos habilitados nesta versão.", back) { listOf("Aves" to "Lotes, ovos, saúde e estoque", "Bovinos" to "Ficha individual, leite, alimentação e saúde", "Suínos" to "Engorda, matrizes, pesagem, partos e saúde").forEach { (name, detail) -> PressCard { Text(name, fontWeight = FontWeight.Medium); Text(detail, color = RuralSecondaryText) } }; PressCard { Text("Novas atividades", fontWeight = FontWeight.Medium); Text("Caprinos, ovinos e piscicultura serão habilitados quando houver formulários, indicadores e relatórios próprios — sem criar telas vazias.", color = RuralSecondaryText) } }
 @Composable private fun HistoryScreen(back: () -> Unit) = Page("Histórico geral", "Lançamentos confirmados da fazenda selecionada.", back) {
     val context = LocalContext.current
@@ -447,16 +662,17 @@ private fun String.decimal(): BigDecimal = replace(',', '.').toBigDecimal()
     val store = remember { LocalBackupStore(context) }
     var revision by remember { mutableIntStateOf(0) }
     val copies = remember(revision) { store.recent() }
-    PressCard { Text("Proteção automática", fontWeight = FontWeight.Bold); Text("O aplicativo agenda uma cópia local por hora. Backup na nuvem depende de conectar um provedor compatível.", color = RuralSecondaryText) }
+    PressCard { Text("Proteção automática", fontWeight = FontWeight.Bold); Text("O app agenda cópias locais. Salve um arquivo ou envie uma cópia para guardar fora do aparelho.", color = RuralSecondaryText) }
     Button({ runCatching { store.create(); revision++ }.onSuccess { message("Backup local criado com sucesso.") }.onFailure { message("Não foi possível criar o backup agora.") } }, Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Backup, null); Spacer(Modifier.width(8.dp)); Text("Criar backup agora") }
+    BackupExportActions(store, onCreated = { revision++ }, message = message)
     if (copies.isEmpty()) EmptyState("Sem cópias locais", "Toque em criar backup agora para gerar a primeira cópia.") else copies.forEachIndexed { index, backup -> PressCard { Text("Cópia ${index + 1}", fontWeight = FontWeight.Bold); Text(backup.file.name, color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) } }
 }
 @Composable private fun AboutScreen(back: () -> Unit) = Page("Sobre o Simplifica Rural", "Organização local da rotina da fazenda.", back) {
-    PressCard { Text("Simplifica Rural", fontWeight = FontWeight.Bold); Text("Registros de animais, produção, estoque, financeiro, agenda e secretária local.", color = RuralSecondaryText) }
-    PressCard { Text("Como os dados funcionam", fontWeight = FontWeight.Bold); Text("Cada confirmação grava um lançamento local ligado à fazenda selecionada. A secretária prepara a ação; você revisa antes de salvar.", color = RuralSecondaryText) }
+    PressCard { Text("Simplifica Rural", fontWeight = FontWeight.Bold); Text("Registros de animais, produção, estoque, financeiro e agenda.", color = RuralSecondaryText) }
+    PressCard { Text("Como os dados funcionam", fontWeight = FontWeight.Bold); Text("Cada lançamento salvo fica vinculado à fazenda selecionada.", color = RuralSecondaryText) }
 }
 @Composable private fun PackagingScreen(back: () -> Unit, message: (String) -> Unit) = Page("Embalagens de ovos", "Defina quantos ovos entram em cada embalagem.", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { PackagingConversionService(context) }; var name by remember { mutableStateOf("Bandeja padrão") }; var eggs by remember { mutableStateOf(service.eggsPerPackage(scope, name).toString()) }; OutlinedTextField(name, { name = it; eggs = service.eggsPerPackage(scope, it).toString() }, Modifier.fillMaxWidth(), label = { Text("Embalagem") }, shape = RoundedCornerShape(14.dp)); OutlinedTextField(eggs, { eggs = it }, Modifier.fillMaxWidth(), label = { Text("Ovos por embalagem") }, shape = RoundedCornerShape(14.dp)); Button({ runCatching { service.setEggsPerPackage(scope, name, eggs.toInt()) }.onSuccess { message("Conversão salva para $name.") }.onFailure { message("Informe uma embalagem e quantidade válida.") } }, Modifier.fillMaxWidth().height(48.dp)) { Text("Salvar conversão") }; listOf("Meia dúzia" to 6, "Dúzia" to 12, "Bandeja pequena" to 20, "Bandeja padrão" to 30).forEach { (label, amount) -> PressCard({ name = label; eggs = service.eggsPerPackage(scope, label).toString() }) { Text(label, fontWeight = FontWeight.Bold); Text("${service.eggsPerPackage(scope, label)} ovos", color = RuralSecondaryText) } } }
-@Composable private fun OrdersScreen(back: () -> Unit, message: (String) -> Unit) = Page("Pedidos", "Pedidos só entram no caixa quando são entregues.", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { RuralOrderService(context) }; var revision by remember { mutableIntStateOf(0) }; val orders = remember(revision) { service.list(scope) }; if (orders.isEmpty()) EmptyState("Sem pedidos", "A secretária cria pedidos quando uma venda precisa ser reagendada.") else orders.forEach { order -> var partial by remember(order.id) { mutableStateOf("") }; PressCard { Text("${order.customer} • ${order.product}", fontWeight = FontWeight.Bold); Text("${order.quantity.stripTrailingZeros().toPlainString()} ${order.unit} • ${money(order.total)} • ${order.status.name.lowercase().replace('_', ' ')}", color = RuralSecondaryText); order.note?.let { Text(it, color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton({ service.review(order); revision++ }) { Text("Rever estoque") }; if (order.status == br.com.simplificarural.domain.orders.RuralOrderStatus.PRONTO_PARA_SEPARAR) TextButton({ runCatching { service.delivered(order); revision++ }.onFailure { message(it.message ?: "Não foi possível entregar.") } }) { Text("Entregar") } }; if (order.status in setOf(br.com.simplificarural.domain.orders.RuralOrderStatus.AGENDADO, br.com.simplificarural.domain.orders.RuralOrderStatus.PRONTO_PARA_SEPARAR)) { OutlinedTextField(partial, { partial = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade para entrega parcial") }, shape = RoundedCornerShape(14.dp)); TextButton({ runCatching { service.deliverPartial(order, partial.replace(',', '.').toBigDecimal()); revision++ }.onSuccess { message("Parte entregue; saldo virou novo pedido pendente.") }.onFailure { message(it.message ?: "Quantidade parcial inválida ou estoque insuficiente.") } }) { Text("Entregar parcial") } } } } }
+@Composable private fun OrdersScreen(back: () -> Unit, message: (String) -> Unit) = Page("Pedidos", "Pedidos só entram no caixa quando são entregues.", back) { val context = LocalContext.current; val scope = remember { FarmContextStore(context).current() }; val service = remember { RuralOrderService(context) }; var revision by remember { mutableIntStateOf(0) }; val orders = remember(revision) { service.list(scope) }; if (orders.isEmpty()) EmptyState("Sem pedidos", "Os pedidos registrados nesta fazenda aparecem aqui.") else orders.forEach { order -> var partial by remember(order.id) { mutableStateOf("") }; PressCard { Text("${order.customer} • ${order.product}", fontWeight = FontWeight.Bold); Text("${order.quantity.stripTrailingZeros().toPlainString()} ${order.unit} • ${money(order.total)} • ${order.status.name.lowercase().replace('_', ' ')}", color = RuralSecondaryText); order.note?.let { Text(it, color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { TextButton({ service.review(order); revision++ }) { Text("Rever estoque") }; if (order.status == br.com.simplificarural.domain.orders.RuralOrderStatus.PRONTO_PARA_SEPARAR) TextButton({ runCatching { service.delivered(order); revision++ }.onFailure { message(it.message ?: "Não foi possível entregar.") } }) { Text("Entregar") } }; if (order.status in setOf(br.com.simplificarural.domain.orders.RuralOrderStatus.AGENDADO, br.com.simplificarural.domain.orders.RuralOrderStatus.PRONTO_PARA_SEPARAR)) { OutlinedTextField(partial, { partial = it }, Modifier.fillMaxWidth(), label = { Text("Quantidade para entrega parcial") }, shape = RoundedCornerShape(14.dp)); TextButton({ runCatching { service.deliverPartial(order, partial.replace(',', '.').toBigDecimal()); revision++ }.onSuccess { message("Parte entregue; saldo virou novo pedido pendente.") }.onFailure { message(it.message ?: "Quantidade parcial inválida ou estoque insuficiente.") } }) { Text("Entregar parcial") } } } } }
 @Composable private fun AssistantScreen(back: () -> Unit, message: (String) -> Unit, open: (String) -> Unit, startVoice: Boolean) = Page("Assistente Rural", "Conversa com contexto da propriedade", back) {
     val context = LocalContext.current; val assistant = remember { RuralAssistant(context) }; val models = remember { AiModelRepository(context) }; val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -516,18 +732,12 @@ private fun br.com.simplificarural.ai.AiDraft.route(): String = when (action) {
     val interaction = remember { MutableInteractionSource() }; val pressed by interaction.collectIsPressedAsState(); val scale by animateFloatAsState(if (pressed) .97f else 1f, tween(120), label = "card"); var expanded by remember { mutableStateOf(false) }; val action = onClick ?: { expanded = !expanded }
     Card(Modifier.fillMaxWidth().scale(scale).clickable(interactionSource = interaction, indication = null, onClick = action), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), border = BorderStroke(1.dp, Color(0xFFE8EEE9)), elevation = CardDefaults.cardElevation(1.dp)) { Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) { content(); if (onClick == null && expanded) Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, Modifier.size(15.dp), tint = RuralGreen); Spacer(Modifier.width(6.dp)); Text("Detalhes exibidos acima. Toque novamente para recolher.", color = RuralSecondaryText, style = MaterialTheme.typography.labelSmall) } } }
 }
-@Composable private fun RecentProductionHistory(records: List<br.com.simplificarural.domain.management.ManagementRecord>, open: (String) -> Unit) {
-    val production = records.filter { it.type in setOf(
-        br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS,
-        br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE,
-        br.com.simplificarural.domain.management.ManagementRecordType.PESAGEM_SUINOS,
-        br.com.simplificarural.domain.management.ManagementRecordType.PARTO_SUINOS
-    ) }.sortedByDescending { it.createdAt }.take(5)
-    Text("Últimas alterações", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+@Composable private fun RecentProductionHistory(production: List<ManagementRecord>, open: (String) -> Unit) {
+    Text("Produção recente", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
     if (production.isEmpty()) EmptyState("Sem produção registrada", "Os lançamentos confirmados de ovos, leite, pesagens e partos aparecerão aqui.") else production.forEach { record ->
         val route = when (record.type) {
-            br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_OVOS -> RuralRoutes.BIRDS
-            br.com.simplificarural.domain.management.ManagementRecordType.PRODUCAO_LEITE -> RuralRoutes.CATTLE
+            ManagementRecordType.PRODUCAO_OVOS -> RuralRoutes.BIRDS
+            ManagementRecordType.PRODUCAO_LEITE -> RuralRoutes.CATTLE
             else -> RuralRoutes.SWINE
         }
         PressCard({ open(route) }) { Text(record.description, fontWeight = FontWeight.Bold); Text("${record.date} • ${record.quantity?.stripTrailingZeros()?.toPlainString().orEmpty()} ${record.unit.orEmpty()}", color = RuralSecondaryText, style = MaterialTheme.typography.bodySmall) }
@@ -552,19 +762,40 @@ private fun itemCategory(item: br.com.simplificarural.domain.management.StockBal
 @Composable private fun Notice(text: String, color: Color) = Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Info, null, tint = color, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(text, color = RuralSecondaryText) }
 @Composable private fun MiniMetric(label: String, value: String, color: Color) = Column { Text(label, color = RuralSecondaryText, style = MaterialTheme.typography.labelSmall); Text(value, color = color, fontWeight = FontWeight.Bold) }
 @Composable private fun MetricGrid(metrics: List<Pair<String, String>>) = Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { metrics.chunked(2).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { row.forEach { (label, value) -> var expanded by remember(label, value) { mutableStateOf(false) }; Card(Modifier.weight(1f).clickable { expanded = !expanded }, shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), border = BorderStroke(1.dp, Color(0xFFE8EEE9))) { Column(Modifier.padding(10.dp)) { Text(label, color = RuralSecondaryText, style = MaterialTheme.typography.labelSmall); Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); if (expanded) Text("Indicador calculado a partir dos registros desta área.", color = RuralSecondaryText, style = MaterialTheme.typography.labelSmall) } }; if (row.size == 1) Spacer(Modifier.weight(1f)) } } } }
-@Composable private fun QuickGrid(items: List<Pair<String, String>>, open: (String) -> Unit) { var moreOpen by remember { mutableStateOf(false) }; val primary = if (items.size > 4) items.take(3) + ("Mais" to "") else items.take(4); Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) { primary.forEach { (name, route) -> if (name == "Mais") Box(Modifier.weight(1f)) { ActionCard(name, null, Icons.Default.MoreHoriz, Modifier.fillMaxWidth()) { moreOpen = true }; DropdownMenu(moreOpen, { moreOpen = false }) { items.drop(3).forEach { (extraName, extraRoute) -> val target = if (extraRoute == RuralRoutes.GENERIC) RuralRoutes.feature(extraName) else extraRoute; DropdownMenuItem({ Text(extraName) }, { moreOpen = false; open(target) }) } } } else { val target = if (route == RuralRoutes.GENERIC) RuralRoutes.feature(name) else route; ActionCard(name, target, Icons.Default.AddCircle, Modifier.weight(1f)) { open(target) } } }; repeat(4 - primary.size) { Spacer(Modifier.weight(1f)) } } }
-@Composable private fun ActionCard(title: String, route: String? = null, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier, click: () -> Unit) { val interaction = remember { MutableInteractionSource() }; val pressed by interaction.collectIsPressedAsState(); val scale by animateFloatAsState(if (pressed) .97f else 1f, tween(120), label = "action"); Card(modifier.heightIn(min = 58.dp).scale(scale).clickable(interactionSource = interaction, indication = null, onClick = click), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), border = BorderStroke(1.dp, Color(0xFFE8EEE9))) { Column(Modifier.fillMaxSize().padding(vertical = 5.dp, horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { RuralVectorIcon(title, route, icon, Modifier.size(19.dp)); Spacer(Modifier.height(2.dp)); Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) } } }
+@Composable
+private fun QuickGrid(items: List<Pair<String, String>>, open: (String) -> Unit) {
+    var moreOpen by remember { mutableStateOf(false) }
+    val primary = if (items.size > 4) items.take(3) + ("Mais" to "") else items
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        primary.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                row.forEach { (name, route) ->
+                    if (route.isEmpty()) {
+                        Box(Modifier.weight(1f)) {
+                            ActionCard(name, null, Icons.Default.MoreHoriz, Modifier.fillMaxWidth()) { moreOpen = true }
+                            DropdownMenu(moreOpen, { moreOpen = false }) {
+                                items.drop(3).forEach { (extraName, extraRoute) ->
+                                    val target = if (extraRoute == RuralRoutes.GENERIC) RuralRoutes.feature(extraName) else extraRoute
+                                    DropdownMenuItem({ Text(extraName) }, {
+                                        moreOpen = false
+                                        open(target)
+                                    })
+                                }
+                            }
+                        }
+                    } else {
+                        val target = if (route == RuralRoutes.GENERIC) RuralRoutes.feature(name) else route
+                        ActionCard(name, target, Icons.Default.AddCircle, Modifier.weight(1f)) { open(target) }
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+@Composable private fun ActionCard(title: String, route: String? = null, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier, iconSize: Dp = 19.dp, click: () -> Unit) { val interaction = remember { MutableInteractionSource() }; val pressed by interaction.collectIsPressedAsState(); val scale by animateFloatAsState(if (pressed) .97f else 1f, tween(120), label = "action"); Card(modifier.heightIn(min = 58.dp).scale(scale).clickable(interactionSource = interaction, indication = null, onClick = click), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = Color.White), border = BorderStroke(1.dp, Color(0xFFE8EEE9))) { Column(Modifier.fillMaxSize().padding(vertical = 5.dp, horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { RuralVectorIcon(title, route, icon, Modifier.size(iconSize)); Spacer(Modifier.height(2.dp)); Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) } } }
 @Composable private fun RuralVectorIcon(label: String, route: String? = null, fallback: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
-    val resource = when {
-        route == RuralRoutes.BIRD_LOTS -> R.drawable.ic_rural_birds
-        route == RuralRoutes.SWINE_LOTS || route == RuralRoutes.SWINE_FATTENING || route == RuralRoutes.SWINE_BREEDING || route == RuralRoutes.SOW_DETAIL -> R.drawable.ic_rural_swine
-        route == RuralRoutes.ASSISTANT -> R.drawable.ic_rural_assistant
-        route == RuralRoutes.AGENDA -> R.drawable.ic_rural_agenda
-        route == RuralRoutes.HEALTH -> R.drawable.ic_rural_health
-        route == RuralRoutes.STOCK || route == RuralRoutes.STOCK_DETAIL -> R.drawable.ic_rural_stock
-        route == RuralRoutes.PURCHASES || route == RuralRoutes.NEW_PURCHASE -> R.drawable.ic_rural_stock
-        route == RuralRoutes.SALES -> R.drawable.ic_rural_sale
-        route == RuralRoutes.PRODUCTION -> R.drawable.ic_rural_production
+    val resource = ruralRouteIcon(route) ?: when {
         label.contains("ovos", true) -> R.drawable.ic_rural_egg
         label.contains("Aves", true) -> R.drawable.ic_rural_birds
         label.contains("Lotes", true) || label.contains("Animais", true) || label.contains("Leitões", true) -> R.drawable.ic_rural_lot
@@ -590,7 +821,7 @@ private fun itemCategory(item: br.com.simplificarural.domain.management.StockBal
     }
     if (resource != null) androidx.compose.foundation.Image(painterResource(resource), label, modifier) else Icon(fallback, label, modifier, tint = RuralGreen)
 }
-@Composable private fun Segment(labels: List<String>, onSelected: (Int) -> Unit = {}) { var selected by remember { mutableIntStateOf(0) }; SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) { labels.forEachIndexed { index, label -> SegmentedButton(selected = selected == index, onClick = { selected = index; onSelected(index) }, shape = SegmentedButtonDefaults.itemShape(index, labels.size)) { Text(label) } } } }
+@Composable private fun Segment(labels: List<String>, initialSelection: Int = 0, onSelected: (Int) -> Unit = {}) { var selected by remember { mutableIntStateOf(initialSelection) }; SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) { labels.forEachIndexed { index, label -> SegmentedButton(selected = selected == index, onClick = { selected = index; onSelected(index) }, shape = SegmentedButtonDefaults.itemShape(index, labels.size)) { Text(label) } } } }
 @Composable private fun SearchField(placeholder: String, onQueryChanged: (String) -> Unit = {}) { var text by remember { mutableStateOf("") }; OutlinedTextField(text, { text = it; onQueryChanged(it) }, Modifier.fillMaxWidth(), placeholder = { Text(placeholder) }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true, shape = RoundedCornerShape(14.dp)) }
 @Composable private fun FormField(label: String) { var text by remember { mutableStateOf("") }; OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), label = { Text(label) }, shape = RoundedCornerShape(14.dp), minLines = if (label == "Observação") 2 else 1) }
 @Composable private fun StatusChip(text: String, color: Color) = Surface(color = color.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) { Text(text, Modifier.padding(horizontal = 10.dp, vertical = 4.dp), color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium) }

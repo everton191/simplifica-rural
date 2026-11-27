@@ -30,6 +30,8 @@ class AnimalRecordsService(context: Context) {
     fun healthHistory(targetId: String): List<HealthEvent> = array("health").map(::health).filter { it.animalOrBatchId == targetId }.sortedByDescending { it.date }
     fun healthHistory(scope: FarmScope): List<HealthEvent> = array("health").map(::health).filter { it.scope == scope }.sortedByDescending { it.date }
     fun reproductionHistory(targetId: String): List<ReproductionEvent> = array("reproduction").map(::reproduction).filter { it.animalId == targetId }.sortedByDescending { it.date }
+    fun reproductionHistory(scope: FarmScope): List<ReproductionEvent> =
+        array("reproduction").map(::reproduction).filter { it.scope == scope }.sortedByDescending { it.date }
     fun tasks(scope: FarmScope): List<RuralTask> = array("tasks").map(::task).filter { it.scope == scope }.sortedBy { it.dueDate }
 
     fun registerAnimal(scope: FarmScope, species: AnimalSpecies, identification: String, sex: AnimalSex = AnimalSex.NAO_INFORMADO, notes: String? = null): Animal {

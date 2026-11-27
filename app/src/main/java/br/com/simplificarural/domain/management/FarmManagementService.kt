@@ -30,6 +30,49 @@ class FarmManagementService(context: Context) {
         return save(scope, ManagementRecordType.VENDA, date, description.ifBlank { "Venda de $product" }, FinancialCategory.VENDA_PRODUCAO, product, if (decreaseStock) StockDirection.SAIDA else null, quantity, unit, unitPrice, lotId, totalAmount = receivedAmount)
     }
 
+    fun registerLooseEggSale(
+        scope: FarmScope, eggs: Int, receivedAmount: BigDecimal, unitPrice: BigDecimal? = null
+    ): ManagementRecord = registerSaleFromStock(scope, "Ovos", "unidades", eggs.toBigDecimal(), receivedAmount, unitPrice)
+
+    fun registerMilkSale(
+        scope: FarmScope, liters: BigDecimal, receivedAmount: BigDecimal, unitPrice: BigDecimal? = null
+    ): ManagementRecord = registerSaleFromStock(scope, "Leite", "litros", liters, receivedAmount, unitPrice)
+
+    fun registerSaleFromStock(
+        scope: FarmScope, product: String, unit: String, quantity: BigDecimal, receivedAmount: BigDecimal, unitPrice: BigDecimal?
+    ): ManagementRecord = synchronized(writeLock) {
+        requirePositive(quantity, "quantidade")
+        requirePositive(receivedAmount, "valor recebido")
+        require(unitPrice == null || (unitPrice * quantity).compareTo(receivedAmount) == 0) { "Preço e valor recebido divergentes." }
+        val stock = stock(CashViewScope.SelectedUnit(scope)).firstOrNull {
+            it.productName.equals(product, ignoreCase = true) && it.unit.equals(unit, ignoreCase = true)
+        }
+        require(stock != null && stock.quantity >= quantity) {
+            "Estoque insuficiente: há ${stock?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"} $unit de ${product.lowercase()}."
+        }
+        save(
+            scope, ManagementRecordType.VENDA, LocalDate.now(), "Venda de ${product.lowercase()}", FinancialCategory.VENDA_PRODUCAO,
+            productName = stock.productName, stockDirection = StockDirection.SAIDA, quantity = quantity, unit = stock.unit,
+            unitPrice = unitPrice, totalAmount = receivedAmount, metadata = mapOf("inventoryCategory" to stock.inventoryCategory)
+        )
+    }
+
+    fun registerPurchaseTotal(
+        scope: FarmScope, product: String, quantity: BigDecimal, unit: String, total: BigDecimal, unitPrice: BigDecimal?
+    ): ManagementRecord {
+        requirePositive(quantity, "quantidade")
+        requirePositive(total, "valor da compra")
+        require(unitPrice == null || (unitPrice * quantity).compareTo(total) == 0) { "Preço e total da compra divergentes." }
+        val feed = product.contains("ração", true) || product.contains("racao", true)
+        val category = if (feed) FinancialCategory.RACAO else FinancialCategory.OUTRA_DESPESA
+        val stockCategory = stock(CashViewScope.SelectedUnit(scope)).firstOrNull {
+            it.productName == product && it.unit == unit
+        }?.inventoryCategory ?: if (feed) "Alimentação" else "Outros"
+        return save(scope, ManagementRecordType.COMPRA, LocalDate.now(), "Compra de $product",
+            category, product, StockDirection.ENTRADA, quantity, unit, unitPrice, totalAmount = total,
+            metadata = mapOf("inventoryCategory" to stockCategory))
+    }
+
     fun registerExpense(scope: FarmScope, category: FinancialCategory, amount: BigDecimal, date: LocalDate = LocalDate.now(), description: String): ManagementRecord {
         require(category != FinancialCategory.VENDA_PRODUCAO && category != FinancialCategory.OUTRA_RECEITA)
         requirePositive(amount, "valor da despesa")
@@ -41,22 +84,56 @@ class FarmManagementService(context: Context) {
         return save(scope, ManagementRecordType.VENDA, date, description, FinancialCategory.OUTRA_RECEITA, totalAmount = amount)
     }
 
-    /** Venda de ovos embalados é uma operação composta: consome ovos e embalagem, mas entra no caixa uma única vez. */
-    fun registerEggTraySale(scope: FarmScope, product: String, trays: BigDecimal, unit: String, unitPrice: BigDecimal, date: LocalDate = LocalDate.now(), description: String = "", receivedAmount: BigDecimal = trays * unitPrice): ManagementRecord {
-        requirePositive(trays, "quantidade de bandejas"); requirePositive(unitPrice, "preço de venda")
+    fun registerEggTraySale(scope: FarmScope, product: String, trays: BigDecimal, unit: String, unitPrice: BigDecimal, date: LocalDate = LocalDate.now(), description: String = "", receivedAmount: BigDecimal = trays * unitPrice): ManagementRecord =
+        registerEggTraySale(scope, product, listOf(EggTraySaleLine(trays, unitPrice)), unit, date, description, receivedAmount)
+
+    /** Valida a venda inteira e grava caixa, ovos e embalagens em uma única atualização. */
+    fun registerEggTraySale(
+        scope: FarmScope, product: String, lines: List<EggTraySaleLine>, unit: String,
+        date: LocalDate = LocalDate.now(), description: String = "",
+        receivedAmount: BigDecimal = lines.sumOf { it.subtotal }
+    ): ManagementRecord = synchronized(writeLock) {
+        require(lines.isNotEmpty()) { "Informe a quantidade e o preço de venda." }
+        lines.forEach { line ->
+            requirePositive(line.trays, "quantidade de bandejas")
+            requirePositive(line.unitPrice, "preço de venda")
+        }
+        val trays = lines.sumOf { it.trays }
+        require(receivedAmount >= BigDecimal.ZERO && receivedAmount <= lines.sumOf { it.subtotal }) {
+            "Valor recebido inválido."
+        }
         val balances = stock(CashViewScope.SelectedUnit(scope))
         val eggs = balances.firstOrNull { it.productName.equals("ovos", true) && it.unit.contains("unidade", true) }
-        val packaging = balances.filter { it.productName.contains("bandeja", true) || it.productName.contains("cartela", true) }.maxByOrNull { it.quantity }
-        val eggsPerPackage = PackagingConversionService(appContext).eggsPerPackage(scope, product)
+        val packagingName = if (product.contains("cartela", true)) "cartela" else "bandeja"
+        val packaging = balances.filter { it.productName.contains(packagingName, true) }.maxByOrNull { it.quantity }
+        val conversion = PackagingConversionService(appContext)
+        val eggsPerPackage = conversion.eggsPerPackage(scope, product, conversion.eggsPerPackage(scope, "Bandeja padrão"))
         val requiredEggs = trays * BigDecimal(eggsPerPackage)
         val missing = buildList {
             if (eggs == null || eggs.quantity < requiredEggs) add("ovos: disponíveis ${eggs?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"}, necessários ${requiredEggs.stripTrailingZeros().toPlainString()}")
-            if (packaging == null || packaging.quantity < trays) add("bandejas: disponíveis ${packaging?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"}, necessárias ${trays.stripTrailingZeros().toPlainString()}")
+            if (packaging == null || packaging.quantity < trays) add("${packagingName}s: disponíveis ${packaging?.quantity?.stripTrailingZeros()?.toPlainString() ?: "0"}, necessárias ${trays.stripTrailingZeros().toPlainString()}")
         }
         require(missing.isEmpty()) { "Estoque insuficiente para fechar a venda (${missing.joinToString("; ")})." }
-        registerStockConsumption(scope, eggs!!.productName, requiredEggs, eggs.unit, date)
-        registerStockConsumption(scope, packaging!!.productName, trays, packaging.unit, date)
-        return registerSale(scope, product, trays, unit, unitPrice, date, description, receivedAmount = receivedAmount, decreaseStock = false)
+        val prices = JSONArray().apply {
+            lines.forEach { line -> put(JSONObject()
+                .put("quantity", line.trays.toPlainString())
+                .put("unitPrice", line.unitPrice.toPlainString()))
+            }
+        }
+        val sale = ManagementRecord(
+            UUID.randomUUID().toString(), scope, ManagementRecordType.VENDA, date,
+            description.ifBlank { "Venda de $product" }, FinancialCategory.VENDA_PRODUCAO,
+            productName = product, quantity = trays, unit = unit, unitPrice = lines.singleOrNull()?.unitPrice,
+            totalAmount = receivedAmount, metadata = mapOf("saleLines" to prices.toString())
+        )
+        fun consumption(item: StockBalance, amount: BigDecimal) = ManagementRecord(
+            UUID.randomUUID().toString(), scope, ManagementRecordType.CONSUMO_ESTOQUE, date,
+            "Consumo de ${item.productName}", FinancialCategory.RACAO,
+            productName = item.productName, stockDirection = StockDirection.SAIDA, quantity = amount, unit = item.unit,
+            metadata = mapOf("linkedSaleId" to sale.id, "inventoryCategory" to item.inventoryCategory)
+        )
+        store.appendAll(listOf(consumption(requireNotNull(eggs), requiredEggs), consumption(requireNotNull(packaging), trays), sale))
+        sale
     }
 
     fun registerStockConsumption(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, date: LocalDate = LocalDate.now(), lotId: String? = null): ManagementRecord {
@@ -64,9 +141,14 @@ class FarmManagementService(context: Context) {
         return save(scope, ManagementRecordType.CONSUMO_ESTOQUE, date, "Consumo de $product", FinancialCategory.RACAO, product, StockDirection.SAIDA, quantity, unit, lotId = lotId)
     }
 
-    fun adjustInventory(scope: FarmScope, product: String, quantity: BigDecimal, unit: String, direction: StockDirection, date: LocalDate = LocalDate.now(), description: String): ManagementRecord {
+    fun adjustInventory(
+        scope: FarmScope, product: String, quantity: BigDecimal, unit: String, direction: StockDirection,
+        date: LocalDate = LocalDate.now(), description: String, inventoryCategory: String? = null
+    ): ManagementRecord {
         requirePositive(quantity, "quantidade")
-        return save(scope, ManagementRecordType.AJUSTE_ESTOQUE, date, description, productName = product, stockDirection = direction, quantity = quantity, unit = unit)
+        return save(scope, ManagementRecordType.AJUSTE_ESTOQUE, date, description, productName = product,
+            stockDirection = direction, quantity = quantity, unit = unit,
+            metadata = inventoryCategory?.let { mapOf("inventoryCategory" to it) }.orEmpty())
     }
 
     fun registerEggProduction(scope: FarmScope, eggs: Int, date: LocalDate = LocalDate.now(), lotId: String? = null): ManagementRecord =
@@ -98,13 +180,19 @@ class FarmManagementService(context: Context) {
 
     /** Registros brutos para telas de histórico e gráficos, já isolados pela unidade selecionada. */
     fun records(scope: CashViewScope): List<ManagementRecord> = store.all().filter { matches(it, scope) }.sortedByDescending { it.createdAt }
-    fun isCancelled(record: ManagementRecord): Boolean = audit.getStringSet("cancelled", emptySet()).orEmpty().contains(record.id)
-    fun cancel(scope: FarmScope, recordId: String, reason: String): ManagementRecord {
+    fun confirmedRecords(scope: CashViewScope): List<ManagementRecord> =
+        activeRecords().filter { matches(it, scope) }.sortedByDescending { it.createdAt }
+    fun isCancelled(record: ManagementRecord): Boolean {
+        val cancelled = audit.getStringSet("cancelled", emptySet()).orEmpty()
+        return record.id in cancelled || record.metadata["linkedSaleId"]?.let(cancelled::contains) == true
+    }
+    fun cancel(scope: FarmScope, recordId: String, reason: String): ManagementRecord = synchronized(writeLock) {
         require(reason.isNotBlank()) { "Informe o motivo do cancelamento." }
         val original = store.all().firstOrNull { it.id == recordId && it.scope == scope } ?: error("Lançamento não encontrado.")
         require(!isCancelled(original)) { "Este lançamento já foi cancelado." }
+        require("linkedSaleId" !in original.metadata) { "Cancele a venda para estornar a movimentação de estoque." }
         audit.edit().putStringSet("cancelled", audit.getStringSet("cancelled", emptySet()).orEmpty() + original.id).apply()
-        return save(scope, ManagementRecordType.ESTORNO, LocalDate.now(), "Cancelamento de: ${original.description}", metadata = mapOf("cancelledRecordId" to original.id, "reason" to reason.trim()))
+        save(scope, ManagementRecordType.ESTORNO, LocalDate.now(), "Cancelamento de: ${original.description}", metadata = mapOf("cancelledRecordId" to original.id, "reason" to reason.trim()))
     }
 
     private fun activeRecords(): List<ManagementRecord> = store.all().filterNot(::isCancelled).filter { it.type != ManagementRecordType.ESTORNO }
@@ -112,9 +200,9 @@ class FarmManagementService(context: Context) {
     private fun production(scope: FarmScope, type: ManagementRecordType, amount: Number, unit: String, date: LocalDate, lotId: String?) =
         save(scope, type, date, if (type == ManagementRecordType.PRODUCAO_OVOS) "Produção de ovos" else "Produção de leite", productName = if (type == ManagementRecordType.PRODUCAO_OVOS) "Ovos" else "Leite", stockDirection = StockDirection.ENTRADA, quantity = amount.toString().toBigDecimal(), unit = unit, lotId = lotId)
 
-    private fun save(scope: FarmScope, type: ManagementRecordType, date: LocalDate, description: String, category: FinancialCategory? = null, productName: String? = null, stockDirection: StockDirection? = null, quantity: BigDecimal? = null, unit: String? = null, unitPrice: BigDecimal? = null, lotId: String? = null, totalAmount: BigDecimal? = null, metadata: Map<String, String> = emptyMap()): ManagementRecord {
+    private fun save(scope: FarmScope, type: ManagementRecordType, date: LocalDate, description: String, category: FinancialCategory? = null, productName: String? = null, stockDirection: StockDirection? = null, quantity: BigDecimal? = null, unit: String? = null, unitPrice: BigDecimal? = null, lotId: String? = null, totalAmount: BigDecimal? = null, metadata: Map<String, String> = emptyMap()): ManagementRecord = synchronized(writeLock) {
         val total = totalAmount ?: if (quantity != null && unitPrice != null) quantity * unitPrice else null
-        return ManagementRecord(UUID.randomUUID().toString(), scope, type, date, description, category, productName, stockDirection, quantity, unit, unitPrice, total, lotId, metadata).also(store::append)
+        ManagementRecord(UUID.randomUUID().toString(), scope, type, date, description, category, productName, stockDirection, quantity, unit, unitPrice, total, lotId, metadata).also { store.appendAll(listOf(it)) }
     }
 
     private fun matches(record: ManagementRecord, scope: CashViewScope) = when (scope) {
@@ -123,6 +211,10 @@ class FarmManagementService(context: Context) {
         is CashViewScope.General -> record.scope.organizationId == scope.organizationId
     }
     private fun requirePositive(value: BigDecimal, field: String) = require(value > BigDecimal.ZERO) { "$field deve ser maior que zero." }
+
+    private companion object {
+        val writeLock = Any()
+    }
 }
 
 private object FinancialCalculator {
@@ -163,7 +255,11 @@ private object SwineCalculator {
 private class ManagementRecordStore(context: Context) {
     private val preferences = context.getSharedPreferences("rural_management", Context.MODE_PRIVATE)
     fun all(): List<ManagementRecord> = JSONArray(preferences.getString("records", "[]")).let { array -> (0 until array.length()).map { index -> array.getJSONObject(index).toRecord() } }
-    fun append(record: ManagementRecord) { val records = JSONArray(preferences.getString("records", "[]")); records.put(record.toJson()); preferences.edit().putString("records", records.toString()).apply() }
+    fun appendAll(added: List<ManagementRecord>) {
+        val records = JSONArray(preferences.getString("records", "[]"))
+        added.forEach { records.put(it.toJson()) }
+        preferences.edit().putString("records", records.toString()).apply()
+    }
     private fun ManagementRecord.toJson() = JSONObject().apply { put("id", id); put("organizationId", scope.organizationId); put("farmId", scope.farmId); put("unitId", scope.unitId); put("type", type.name); put("date", date.toString()); put("description", description); put("category", category?.name); put("productName", productName); put("stockDirection", stockDirection?.name); put("quantity", quantity?.toPlainString()); put("unit", unit); put("unitPrice", unitPrice?.toPlainString()); put("totalAmount", totalAmount?.toPlainString()); put("lotId", lotId); put("metadata", JSONObject(metadata)); put("createdAt", createdAt.toString()) }
     private fun JSONObject.toRecord(): ManagementRecord {
         val metadataJson = optJSONObject("metadata") ?: JSONObject()

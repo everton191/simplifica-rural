@@ -32,7 +32,7 @@ import br.com.simplificarural.R
 import br.com.simplificarural.domain.property.FarmContextStore
 import kotlinx.coroutines.delay
 
-/** A short welcoming cover while the local assistant warms up in the background. */
+/** Shows the welcome cover and the first-use flow. */
 @androidx.compose.runtime.Composable
 fun RuralLaunchScreen() {
     val context = LocalContext.current
@@ -65,8 +65,7 @@ private fun FirstUseScreen(onFinished: (String) -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         when (step) {
             0 -> { Text("Vamos organizar sua propriedade", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); Text("Comece pelo nome da fazenda. Você poderá criar granjas e setores depois."); Spacer(Modifier.height(16.dp)); OutlinedTextField(name, { name = it }, label = { Text("Nome da fazenda") }); Spacer(Modifier.height(12.dp)); Button({ if (name.trim().length >= 2) step = 1 }) { Text("Continuar") } }
-            1 -> { Text("Use a secretária no dia a dia", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); Text("Fale ou escreva o que aconteceu. Ela mostra um resumo; só confirme quando estiver certo."); Spacer(Modifier.height(12.dp)); Button({ step = 2 }) { Text("Entendi") } }
-            else -> { Text("Você também pode registrar manualmente", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); Text("Use Animais, Estoque, Financeiro e Agenda quando preferir preencher os dados por tela."); Spacer(Modifier.height(12.dp)); Button({ onFinished(name) }) { Text("Abrir minha fazenda") } }
+            else -> { Text("Registre a rotina da fazenda", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Spacer(Modifier.height(12.dp)); Text("Use Animais, Estoque, Financeiro e Agenda quando preferir preencher os dados por tela."); Spacer(Modifier.height(12.dp)); Button({ onFinished(name) }) { Text("Abrir minha fazenda") } }
         }
     }
 }

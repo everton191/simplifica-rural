@@ -38,6 +38,7 @@ object RuralRoutes {
     const val SETTINGS = "settings"
     const val ACTIVITIES = "activities"
     const val HISTORY = "history"
+    const val DAY_SUMMARY = "day_summary"
     const val BACKUP = "backup"
     const val ABOUT = "about"
     const val ASSISTANT = "assistant"

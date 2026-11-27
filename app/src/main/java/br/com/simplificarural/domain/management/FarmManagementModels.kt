@@ -30,6 +30,10 @@ enum class FinancialCategory(val isCashOperatingCost: Boolean = false, val isOpp
 
 enum class StockDirection { ENTRADA, SAIDA }
 
+data class EggTraySaleLine(val trays: BigDecimal, val unitPrice: BigDecimal) {
+    val subtotal: BigDecimal get() = trays * unitPrice
+}
+
 /** Identificador legível para evitar confundir compra, produção, consumo e venda no histórico. */
 enum class OperationFlow { ENTRADA_ESTOQUE, SAIDA_ESTOQUE, PRODUCAO, ENTRADA_CAIXA, SAIDA_CAIXA, REGISTRO_TECNICO }
 
